@@ -1,28 +1,104 @@
-# sandwm
+# Physics-grounded Finite-element World Model
 
-A small **action-conditioned world model for a falling-sand pixel world** (Noita / The Powder Toy
-style). The whole loop -- generate data, train, evaluate -- runs on a laptop CPU in about twenty
-minutes, and the same code runs on cloud GPUs through [Modal](https://modal.com) for anything bigger.
+Existing world models treat an object as one lump, such as a ball or a whole car. Ours builds the
+world from tiny elements for enhanced physics simulation and matter interactions.
 
-* `sandwm.generate` -- a fast batched falling-sand simulator plus a scripted random "brush" agent
-  that pours sand and water, draws walls and erases things.
-* `sandwm.train` -- a LeWM-style latent world model: an encoder turns each frame into one embedding
-  vector, and a small causal transformer predicts the next embedding from the action.
-* `sandwm.evaluate` -- open-loop imagination, linear probes of physical quantities, and pictures.
-* `cloud.py` -- the same three steps on Modal GPUs, with datasets and runs kept on a Modal volume.
-* `sandwm.scorecard` -- named checks of what a model gets right (walls kept, mass conserved, ...) on a
-  frozen benchmark, so that any two runs can be compared check by check.
-* `lab/` -- three Claude Code agents (eval, data, train) that improve the model in a loop: see
-  [lab/README.md](lab/README.md).
+- **What it is:** a finite-element world model that learns the behaviour and interactions of
+  solids, liquids and gases.
+- **Physics it captures:** gravity, density, buoyancy, and basic chemical interaction like fire.
+  Sand piles up, water flows, light materials float, gas rises and oil burns.
+- **Goal:** a unified physics foundation world model covering all three states of matter. This
+  project is a first step.
+- **Future directions:** accurate 3D finite-element physics modelling such as aerodynamics and
+  Navier-Stokes flow. (Video-trained world models can never do this!)
+
+The model is developed by an autonomous lab of four AI agents:
+
+- **Data agent:** generates physics-driven synthetic data.
+- **Training agent:** refines the training recipe and architecture, and monitors training runs.
+- **Eval agent:** automatically designs new evals, spots gaps and communicates them to the data
+  and training agents.
+- **Research agent:** gathers ambitious ideas from the other three agents, brainstorms, surveys
+  the literature, and coordinates the implementation of the most promising directions.
+
+**Infrastructure.** The agents work in parallel on [Modal](https://modal.com) cloud compute. A
+backend scheduler provides shared access to CPUs and GPUs: a job queue keeps concurrent usage
+within the 10-GPU limit, and budget caps bound total compute spend.
+
+## Where the project stands (15 November 2026)
+
+The world is a 2D grid of 64x64 elements. Each element holds one material, and an action is a
+brush stroke that adds or removes material. The world model sees the frames and the brush, and
+predicts the frames that follow.
+
+The work is on two branches:
+
+| | `main` (this branch) | `lab-trunk` (what the agents have built since) |
+| --- | --- | --- |
+| materials | sand, water, oil, smoke, walls | adds wood and fire, with reactions: fire spreads to wood and oil, water puts it out, it burns out into smoke |
+| model | one latent vector per frame | a grid of latent vectors with a local predictor |
+| evaluation | a scorecard of named checks on a frozen benchmark | 28 acceptance gates, benchmarks per world, probe scenes (a bonfire, a drenched fire, an oil fire) |
+| research tracks | | a hidden 2D Navier-Stokes air flow that carries smoke and fire (active); a predictor that samples one possible future instead of the average (tried, parked) |
+
+The lab's current best model (run `r0069`) is trained on all of these materials and passes all 28
+of the lab's acceptance gates. The air-flow track is the first step towards aerodynamics. It has
+not succeeded yet: the first attempt lost most of the smoke plumes, and the air world is being
+revised.
+
+## What is in this repository
+
+The Python package is called `sandwm`, the project's working name.
+
+* `sandwm.generate`: a fast batched particle simulator plus a scripted random "brush" agent that
+  pours materials, draws walls and erases things.
+* `sandwm.train`: the world model. An encoder turns each frame into a latent state, and a small
+  causal transformer predicts the next latent state from the action.
+* `sandwm.evaluate`: open-loop imagination, linear probes of physical quantities, and pictures.
+* `sandwm.scorecard`: named checks of what a model gets right (walls kept, mass conserved, ...) on
+  a frozen benchmark, so that any two runs can be compared check by check.
+* `sandwm.play`: an interactive page where you paint into the real world and the imagined one.
+* `cloud.py`: the same steps on Modal CPUs and GPUs, with datasets and runs kept on a Modal volume.
+* `lab/`: the agent lab. Commands in [lab/README.md](lab/README.md), how it works in
+  [lab/MANUAL.md](lab/MANUAL.md).
+
+## The agent lab (`lab/`)
+
+The human writes the program (the goal, the rules, the budget) and can message any agent. The
+agents do the research. Each one is an interactive Claude Code session in its own terminal tab and
+its own git worktree. What they share:
+
+* **A board of plain files**, on its own git branch: the program, the list of gaps, the gates,
+  the ledger of runs, messages and journals. Every change is a commit, so it is clear who decided
+  what and when.
+* **A scorecard.** Every run is scored on frozen benchmarks, on the same windows, next to the
+  current best. Each new way of being wrong that the eval agent finds becomes a named check, so a
+  later run that breaks it again is caught by the numbers. The eval agent also keeps a list of
+  what the benchmarks do not see yet, and turns each entry into a new probe benchmark.
+* **A compute scheduler.** Every cloud job is booked against a budget of GPU minutes before it
+  starts, and is refused if it does not fit. Jobs beyond the allowed number of concurrent GPUs
+  wait in line and start by themselves, first come, first served. Jobs send heartbeats: one whose
+  launcher has died is stopped and charged only up to its last sign of life. Data generation and
+  scoring run on cloud CPUs, outside the GPU budget.
+* **Rules enforced in code.** A guard keeps each agent inside its own worktree and away from the
+  limits, the ledger and `git push`.
+* **Wake-ups by event.** An agent is woken by its own finished jobs and by messages from the
+  others. About every 6 hours its conversation is replaced by an empty one, after a written
+  handover, so that it does not get stuck polishing one idea.
+
+The agents never touch `main`. They publish to `lab-trunk`, and only after the tests pass. Ideas
+too different for the main loop (another family of model, an agent acting in the world) are run
+by the research agent as staged side lines, called tracks, each with its own budget.
 
 ## Quick start (laptop)
+
+The whole loop (generate data, train, evaluate) runs on a laptop CPU in about twenty minutes.
 
 ```bash
 uv sync                                                    # creates .venv (CPU PyTorch on Windows)
 uv run python -m sandwm.generate --out data/basic64        # 2000 + 200 episodes, ~35 s, 15 MB
 uv run python -m sandwm.train --data data/basic64 --out runs/lewm     # ~20 min for 3000 steps
 uv run python -m sandwm.evaluate --run runs/lewm
-uv run pytest                                              # 77 tests
+uv run pytest
 ```
 
 Things to look at afterwards:
@@ -75,7 +151,7 @@ terrain (its data's `terrain` options, as far as that code has them).
 The default is one CPU thread: at one frame at a time the small CNN model runs fastest that way
 (about 35 ms per step including the decoder, versus about 47 ms on four threads).
 
-## Training on Modal GPUs (`cloud.py`)
+## Training on Modal (`cloud.py`)
 
 One-time setup: `uv run modal setup` (stores a token in `~/.modal.toml`).
 
@@ -101,7 +177,8 @@ uv run modal volume get sandwm runs/vit-k2 runs/
 * `--bench <dataset>` on `train`, `sweep` or `reevaluate` also writes a scorecard on that benchmark
   dataset (`python -m sandwm.scorecard`).
 * Once the agent lab is set up (`python -m lab setup`), every GPU job started through `cloud.py` is
-  booked against the lab's budget first and refused if it does not fit: see `lab/README.md`.
+  booked against the lab's budget first, refused if it does not fit, and waits in line when all
+  GPU slots are taken: see `lab/README.md`.
 * `SANDWM_GPU` is an order of preference, default `L4,A10G,T4`: Modal takes the first type it can
   schedule. (A single fixed type sometimes waits many minutes for capacity.) `SANDWM_MAX_GPUS`
   caps how many GPUs a sweep holds at once (default 4).
@@ -112,8 +189,9 @@ uv run modal volume get sandwm runs/vit-k2 runs/
 
 ## The world (`sim.py`, `materials.py`, `scenes.py`)
 
-A 64x64 grid of material indices with a one-cell wall border. The default material set is
-empty / wall / sand / water; `--materials extended` adds oil (floats on water) and smoke (rises).
+A 64x64 grid of elements, each holding one material, with a one-cell wall border. On `main` the
+default material set is empty / wall / sand / water; `--materials extended` adds oil (floats on
+water) and smoke (rises). On `lab-trunk` the agents added wood and fire, with reactions.
 
 The simulator is a **Margolus block cellular automaton**: the grid is cut into 2x2 blocks, every
 block is updated independently by one small rule function (`block_rule`), and the block partition
@@ -149,9 +227,9 @@ sees and exact class targets for metrics.
 
 ## The model (`models.py`)
 
-A re-implementation of the ideas in **LeWorldModel** (LeWM; Maes, Le Lidec, Scieur, LeCun,
+The baseline model on `main` starts from **LeWorldModel** (LeWM; Maes, Le Lidec, Scieur, LeCun,
 Balestriero, 2026, [arXiv:2603.19312](https://arxiv.org/abs/2603.19312),
-[code](https://github.com/lucas-maes/le-wm)):
+[code](https://github.com/lucas-maes/le-wm)) and departs from it where this world required it:
 
 ```
 frame (RGB 64x64) --encoder--> projector (with BatchNorm) --> z_t  in R^192
@@ -166,9 +244,10 @@ SIGReg is what prevents collapse there: it pushes the embeddings of a batch towa
 Gaussian by testing random 1-D projections against N(0, 1).
 
 The second line is not in LeWM. It is on by default (`--recon-weight 1`) because in this world the
-first line alone learns to encode the scenery and little else -- the main finding so far, see
-[Results](#results). `--recon-weight 0` gives the pure LeWM objective, with the decoder reduced to
-a probe trained on detached embeddings; `--lambd 0` drops SIGReg instead.
+first line alone learns to encode the scenery and little else -- the main finding of the baseline,
+see [Baseline results](#baseline-results-before-the-agent-lab). `--recon-weight 0` gives the pure
+LeWM objective, with the decoder reduced to a probe trained on detached embeddings; `--lambd 0`
+drops SIGReg instead.
 
 Two sizes are built in, and any field of `ModelConfig` can be overridden from the command line:
 
@@ -193,14 +272,17 @@ Differences from the paper, and why:
 | | LeWM | here | reason |
 | --- | --- | --- | --- |
 | image size | 224 px, patch 14 (256 tokens) | 64 px, patch 8 (64 tokens) | one pixel is one cell of the world |
-| objective | prediction + SIGReg | prediction + SIGReg + reconstruction | the pure objective takes a shortcut in this world ([Results](#results)) |
-| prediction target | next embedding | **change** in embedding, zero-initialised | starts at the copy-last baseline; matters at small budgets only ([Results](#results)) |
+| objective | prediction + SIGReg | prediction + SIGReg + reconstruction | the pure objective takes a shortcut in this world |
+| prediction target | next embedding | **change** in embedding, zero-initialised | starts at the copy-last baseline; matters at small budgets only |
 | learning rate | 5e-5, 100 epochs | 5e-4 (CNN), 1e-4 (ViT), warm-up + cosine | shorter schedules |
 | mixed precision | bf16 everywhere | bf16 in the encoder trunk only | consecutive embeddings differ by a few percent, about the resolution of bf16 |
 | decoder | trained after the fact, for pictures only | trained alongside; part of the loss unless `--recon-weight 0` | see above |
 
 The decoder maps an embedding to per-cell material logits. A JEPA has no other way to show you a
 picture, so it is also what every "decoded" number and image in the evaluation goes through.
+
+On `lab-trunk` the agents replaced the single vector per frame with a grid of latent vectors and
+a predictor that attends across the grid and across time.
 
 ## How to read the evaluation
 
@@ -226,13 +308,14 @@ It also reports the **within-episode share**: the fraction of the embedding's va
 within episodes rather than between them, next to the same fraction for raw pixels. An embedding
 far below the pixel value mostly says *which episode* a frame is from, not what is happening in it.
 
-## Results
+## Baseline results (before the agent lab)
 
-Status as of 2026-11-14. Every row is a single run with a single seed, so differences of a few
-hundredths are not established. Unless stated: 10,000 training episodes (650,000 frames), small
-CNN model (`--preset cpu`), 20,000 steps at batch 128 (about 6 minutes on an A10G), evaluated on
-256 held-out windows, open-loop imagination judged 16 simulator frames ahead. "Changed cells" is
-accuracy on the ~5% of cells that differ from the last context frame, as model / frozen / ceiling.
+Measured on 2026-11-14 with the code on `main`, before the agents took over. Every row is a single
+run with a single seed, so differences of a few hundredths are not established. Unless stated:
+10,000 training episodes (650,000 frames), small CNN model (`--preset cpu`), 20,000 steps at batch
+128 (about 6 minutes on an A10G), evaluated on 256 held-out windows, open-loop imagination judged
+16 simulator frames ahead. "Changed cells" is accuracy on the ~5% of cells that differ from the
+last context frame, as model / frozen / ceiling.
 
 ### 1. The pure LeWM objective encodes the scenery, not the dynamics
 
@@ -293,26 +376,24 @@ indistinguishable.
 ceiling 0.72, changed cells 0.46 / 0.23 / 0.70, probes 0.60-0.94. The current defaults (frame
 skip 4) have been verified in the cloud but not yet run to completion on the laptop.
 
-### 5. Known limits
+### 5. Limits of the baseline
+
+These are the limits the agent lab started from; its work on each is on `lab-trunk`.
 
 * One vector per frame caps what can be shown at a decode mIoU of about 0.8: thin walls, single
-  grains and falling streams are blurred or lost, and a wider vector did not help.
+  grains and falling streams are blurred or lost, and a wider vector did not help. (The lab's
+  answer: a grid of latent vectors.)
 * The predictor is deterministic, so where the physics is random (water surfaces, sinking sand)
-  it predicts an average, and imagined frames lose detail as they roll forward.
-* Trained only on the scripted random brush; no agent, no task, 64x64, four materials.
+  it predicts an average, and imagined frames lose detail as they roll forward. (The lab tried a
+  predictor that samples, as a research track, and parked it: no setting beat the deterministic
+  control.)
+* Trained only on the scripted random brush; no agent, no task, 64x64, four materials. (The lab
+  has added oil, smoke, wood and fire.)
 * The decoder is small (0.35M parameters) and every decoded number goes through it.
 
-## The agent lab (`lab/`)
+## Next
 
-`lab/` sets up three Claude Code agents that keep improving the model on their own: one judges
-every run and keeps the list of what is wrong, one works on the simulator and the data, one on
-the model and the training runs. They share a board of plain files, a GPU budget enforced in
-code, and a scorecard that turns every discovered failure into a regression check.
-[lab/README.md](lab/README.md) says how to start, watch, steer and stop it.
-
-## Not started
-
-Ideas, none of them begun: a grid of latent vectors with a local predictor instead of one vector;
-a pixel-space local baseline (a small convolutional net predicting the next frame) as a yardstick;
-a stochastic predictor; planning towards a goal frame in latent space; reactions (fire, wood,
-acid), larger grids and an embodied agent.
+* Air: an air world whose smoke plumes the model can reproduce (the active research track), as
+  the first step towards aerodynamics.
+* Larger grids, then 3D.
+* An agent that acts in the world, and planning towards a goal.
