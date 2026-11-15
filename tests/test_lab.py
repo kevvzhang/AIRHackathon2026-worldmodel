@@ -1,6 +1,7 @@
 """The agent lab's tooling: budget, board, guard, sharing code.  Nothing here starts an agent or a cloud job."""
 
 import json
+import shutil
 import subprocess
 import sys
 from datetime import timedelta
@@ -720,3 +721,31 @@ def test_the_launcher_replaces_a_due_conversation_that_sits_idle(repo, monkeypat
     assert "the launcher ended the conversation" in boards.last_note(repo.board, "data")
     notes = (repo.board / "journal" / "data.md").read_text()
     assert asked() and (repo.board / "journal" / "data.md").read_text() == notes, "one request is enough"
+
+
+def test_the_launcher_passes_the_compaction_limit_and_resumes_by_id(repo):
+    """lab/agent.ps1 -DryRun prints the claude command it would run; nothing is started."""
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("the launcher is a Windows PowerShell script")
+    script = repo.home / "lab" / "agent.ps1"
+    shutil.copy(Path(cli.__file__).parent / "agent.ps1", script)
+
+    def dry_run(*more: str) -> str:
+        done = subprocess.run([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Role", "eval",
+                               "-DryRun", *more], capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+        return done.stdout
+
+    limits = repo.board / "limits.toml"
+    out = dry_run()
+    assert "--name lab-eval" in out and "--autocompact 500000" in out, "the template's compact_tokens"
+    assert "--resume" not in out and "--continue" not in out
+    limits.write_text(limits.read_text().replace("compact_tokens = 500000", "compact_tokens = 250_000"))
+    assert "--autocompact 250000" in dry_run()
+    limits.write_text(limits.read_text().replace("compact_tokens = 250_000", "compact_tokens = 0"))
+    assert "--autocompact" not in dry_run(), "0 leaves Claude Code's own default"
+    assert "--continue" in dry_run("-Continue"), "no conversation on record yet"
+    (repo.board / "status").mkdir(exist_ok=True)
+    (repo.board / "status" / "eval.json").write_text(json.dumps({"session": "0a1b2c3d-1111-2222-3333-444455556666"}))
+    assert "--resume 0a1b2c3d-1111-2222-3333-444455556666" in dry_run("-Continue"), "--continue skips /loop conversations"

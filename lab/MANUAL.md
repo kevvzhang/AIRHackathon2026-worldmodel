@@ -185,6 +185,13 @@ Usage and billing in the Modal dashboard.
   until a job of its own ends or another agent messages it, and otherwise wakes once every
   2 hours as a fallback. Usage is still by far the larger cost, and it comes out of your Claude
   plan or API budget, not out of `limits.toml`.
+  Nearly all of it is re-reading: at every step an agent reads its whole conversation again. In
+  the lab's first 9.5 hours the three agents read 767 million tokens that way, in conversations
+  that grew to 960,000 tokens. Two settings in `limits.toml` bound it: `session_hours` (a new,
+  empty conversation, see "Fresh starts") and `compact_tokens` (Claude Code summarises the
+  conversation once it holds that many tokens; the launcher passes it as `claude --autocompact`).
+  Replayed on those 9.5 hours, 500,000 would have roughly halved the tokens read, and 300,000
+  would have cut them by about 60%, with about twice as many summaries.
 
 ## Known limits of this setup
 

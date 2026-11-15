@@ -88,6 +88,20 @@ if ($Role -eq 'research') {
         "Start no loop and no timer: you are woken only by messages."
 }
 
+function Get-CompactWindow {
+    # compact_tokens in limits.toml: Claude Code summarises (compacts) the conversation once it holds that
+    # many tokens. Returns the value for `claude --autocompact`, or '' to leave Claude Code's own default.
+    try {
+        $hit = Select-String -Path (Join-Path $board 'limits.toml') -Pattern '^\s*compact_tokens\s*=\s*"?([0-9_]+)\s*([kK]?)' |
+            Select-Object -First 1
+    } catch { return '' }
+    if (-not $hit) { return '' }
+    $n = [long]($hit.Matches[0].Groups[1].Value -replace '_', '')
+    if ($hit.Matches[0].Groups[2].Value) { $n *= 1000 }
+    if ($n -le 0) { return '' }
+    [string][Math]::Min([Math]::Max($n, 100000), 1000000)   # the range claude accepts
+}
+
 function Get-ClaudeArgs([bool]$Resume) {
     $list = @(
         '--model', $Model,
@@ -97,6 +111,8 @@ function Get-ClaudeArgs([bool]$Resume) {
         '--add-dir', $board, (Join-Path $lab 'runs'), (Join-Path $lab 'datasets'),
         '--append-system-prompt', $identity
     )
+    $window = Get-CompactWindow   # read again at every fresh start, so a changed limit applies to the next conversation
+    if ($window) { $list += @('--autocompact', $window) }
     if ($Resume) {
         # By its id, as the guard hook recorded it: `claude --continue` skips conversations that began with /loop.
         $id = ''

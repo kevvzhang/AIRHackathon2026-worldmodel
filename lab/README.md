@@ -25,6 +25,10 @@ first, and the new conversation begins by looking at the evidence afresh. Nothin
 `lab status` shows each conversation's age and when its turn comes. The period is
 `session_hours` in `limits.toml`; 0 switches it off.
 
+In between, Claude Code summarises (compacts) a conversation once it holds `compact_tokens`
+tokens (500,000). An agent re-reads its whole conversation at every step, so this is what
+keeps the token use down; a lower number saves more and forgets more.
+
 ## Watch
 
 ```powershell
@@ -69,6 +73,7 @@ The agents reread these files in `.lab\board\` at every tick. Edit one, then run
 | `gpu_minutes_tracks` | the part of the total that research tracks may use |
 | `cpu_minutes_per_job` | the longest one data-generation job may run |
 | `session_hours` | hours before an agent's conversation is replaced by an empty one (0 = never) |
+| `compact_tokens` | tokens a conversation may hold before it is summarised (0 = Claude Code's default, about 967,000) |
 
 ## Go back
 
