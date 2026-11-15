@@ -1,8 +1,8 @@
 # Features: what the world learns next
 
-Kept by the eval agent. A feature is opened only when the current world is roughly right (the
-champion passes every gate in `gates.toml` and no blocker is open in `gaps.md`), and only one is
-in flight at a time.
+Kept by the eval agent. A feature is opened when the current world is roughly right: no blocker
+is open in `gaps.md` and what still fails in `gates.toml` is minor. That is eval's judgement, a
+little early rather than late (see `roles\eval.md`). Only one feature is in flight at a time.
 
 Entry format:
 

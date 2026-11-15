@@ -52,6 +52,16 @@ dataset is good if a model trained on it is wrong less often.
 
 A dataset is never changed after it is announced. A correction is a new version.
 
+## Several at once
+
+Do not offer train one dataset and wait for the verdict. For a gap, prepare two to four
+candidates that differ in strategy: another scene generator, another brush policy, a mixture, a
+targeted set added to the reference data. Generate them together and hand train the whole
+batch, with a line for each on what differs and what you expect. Keep screening candidates
+small (a few thousand episodes): enough to show a direction, cheap to train on. The one that
+wins is regenerated at full size as a new version. While train works through a batch, start on
+the next gap, or on the world of the next feature if eval has asked for it.
+
 ## Changing the world
 
 A change to the physics or the materials changes what the truth is. Keep the existing world

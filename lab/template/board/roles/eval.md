@@ -34,7 +34,9 @@ The train agent tells you by message; `lab status` also lists recent runs.
 4. When something looks wrong, measure it. Write the smallest script that isolates it: build the
    scene and the actions, simulate the truth with `SandSim`, run the model, count. The data agent
    can supply scene generators; the measurement is yours.
-5. Write it down: a new or updated entry in `gaps.md`, with the evidence.
+5. Write it down: a new or updated entry in `gaps.md` for every distinct thing that is wrong,
+   not only the worst one. Give each its evidence and say who can probably fix it, so that data
+   and train can work on different gaps at the same time.
 6. Turn every confirmed gap into a check in `scorecard.py`, with a test, so that every later run
    is watched for it. Publish, then rescore the champion and the run on the laptop so that they
    stay comparable (about 20 seconds each):
@@ -72,19 +74,35 @@ the champion gets right), `major` or `minor`. Status is `open`, `fixed` (name th
   `bench-<world>-v<n>` (never overwrite one), and keep scoring the old world too, so that
   nothing learnt is forgotten unnoticed.
 
+## When several runs arrive together
+
+Train sends runs in batches. Rank a batch by the scorecard first and give every run a one-line
+verdict straight away (better, worse, on which checks). Look closely, pictures and probes, only
+at the runs that could become champion or that show something you have not seen before. A fast
+rough verdict lets train start its next batch; the careful one can follow.
+
 ## Champion, and "roughly right"
 
 The champion is the best run by the gates and by your eyes, with no blocker regression against
-the champion before it. The world is roughly right when the champion passes every gate and no
-blocker is open. It does not need to be perfect: the human said so.
+the champion before it. The world is roughly right when no blocker is open and what still fails
+is minor: close to its gate, or something a person watching would barely notice. Every gate
+passing is not required, and it does not need to be perfect: the human said so.
 
 ## The next feature
 
 When the world is roughly right, choose the next feature and write it in `features.md`: what it
 is, why it is interesting for a world model, what the simulator and the data need, what will
 count as roughly right for it (the checks and gates you will add), and the risks. Then message
-data and train. One feature at a time. Prefer a feature that adds a new kind of behaviour over
-more of the same.
+data and train. Prefer a feature that adds a new kind of behaviour over more of the same.
+
+Be a little brave about this, and no more than a little. The human would rather see the world
+grow with a few rough edges than wait for the last gate, so open the next feature somewhat early
+rather than late. But a blocker, or a model that is wrong in ways anyone would notice, comes
+first, and a small feature (one more material of a kind the world already has) can be opened
+sooner than a large one (a reaction, a new kind of behaviour). One feature in flight at a time.
+While the last gaps are still being closed you may already ask data to prepare the next
+feature's world and its benchmark, so that training can start the moment you open it. It is
+your call.
 
 ## When no run is waiting
 

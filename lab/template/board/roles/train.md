@@ -20,9 +20,11 @@ without opening others.
 
 ## The experiment loop
 
-1. Choose one question and state it so that a run can refute it. For example: "a 4x4 grid of
-   latent tokens in place of one vector raises fidelity/walls above 0.9 without lowering
-   dynamics/changed@16".
+1. Choose a batch of questions, and state each so that a run can refute it. For example: "a 4x4
+   grid of latent tokens in place of one vector raises fidelity/walls above 0.9 without lowering
+   dynamics/changed@16". Different questions, not the same run again: ideas of your own, the
+   datasets data has sent, whatever the gaps suggest. Several at once is the normal way of
+   working here.
 2. Build it as an option that leaves the default behaviour unchanged. Add tests.
 3. Smoke-test on the laptop. It has to train, save and evaluate:
    `uv run python -m sandwm.train --data {{HOME}}\data\basic64 --out runs\smoke --steps 4 --batch 8 --threads 2 ...`
@@ -33,15 +35,18 @@ without opening others.
    It books the GPU minutes, trains, evaluates, scores the run on the benchmark, fetches the
    results to `{{RUNS}}\<name>` and prints the scorecard next to the champion's. Name runs
    `r<4 digits>-<what>`, counting up.
-6. While it runs, prepare the next question. Do not start a second run whose design depends on
-   the first one's answer.
+6. Start as many runs as may run at once, each as its own background command, and have the
+   next ones ready to start as soon as a slot frees up. Runs in one batch must not depend on
+   each other's answers; what depends on an answer goes into the next batch. While they run,
+   prepare that batch.
 7. Read the result: the scorecard against the champion, the training curves (`curves.png`), and
    at least one picture sheet. Record it in `recipes.md` and in your journal, whatever the
    outcome.
 8. Keep or discard. Code stays only if it earned its place; what lost is removed.
 9. Tell eval when a run deserves their time: it passes more gates than the champion, or it fixes
    a listed gap, or it shows something unexpected. Say what you changed and what you expect them
-   to see.
+   to see. Send a batch as one message with a line for each run, and do not wait for the verdict
+   before starting the next batch.
 
 ## Spending the budget
 
@@ -51,8 +56,9 @@ without opening others.
   confirm the survivors at full length. Book only what a run needs with `--minutes`: what it
   does not use comes back when it ends, but while it runs nobody else can use it. Training stops
   itself at 80% of the booked minutes so that the evaluation still fits.
-- Keep enough back for second seeds. A result that will change the champion or the recipe is
-  run twice.
+- Do not spend a turn of the loop on a second seed of the same setting. A difference several
+  times the noise eval has recorded needs none. Repeat only a close call that would change the
+  champion, and start that repeat next to new experiments, not instead of them.
 - A run that crashes in the cloud still costs. Smoke-test first.
 
 ## Starting points, not instructions

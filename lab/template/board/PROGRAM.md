@@ -18,7 +18,8 @@ next. Two aims, in this order, for as long as the lab runs:
    without losing what it could already do.
 
 "Roughly right" is decided by the eval agent, with the gates in `gates.toml` and its own eyes on
-the rollout pictures. One new feature is in flight at a time.
+the rollout pictures. It is a judgement, not a wait for the last number: when no blocker is open
+and what still fails is minor, the next feature can start. One new feature is in flight at a time.
 
 Starting point: `README.md` in your worktree describes the simulator, the model (a JEPA-style
 latent world model with a reconstruction term) and what was found before the lab existed. The
@@ -73,6 +74,26 @@ make sure the agent you are waiting for knows it (a message), and that nothing i
 is left that you could be doing instead. When you are out of ideas, look harder at the pictures,
 reread the gaps and your journal.
 
+## Pace
+
+Iterate fast and wide. The lab learns from how many different ideas it tests, not from how
+carefully it retests one.
+
+- **Work in batches.** Do not send one thing round the whole circle and wait for it to come
+  back. Data offers several generators or mixtures at once. Train runs several different
+  questions side by side, as many as `limits.toml` allows at once, with the next ones ready to
+  start when a slot frees up. Eval reports every gap it sees in a run, not only the worst, so
+  that data and train can work on different gaps at the same time.
+- **Screen short, confirm long.** Most ideas can be judged from a short run or a small dataset.
+  Only what survives screening gets a full-length run.
+- **Do not wait for each other.** Hand over what you have as soon as it is usable and start the
+  next thing. A quick verdict from the scorecard numbers now is worth more than a thorough one
+  later; the thorough look is for runs that could become champion.
+- **Do not repeat a run to feel sure.** A second seed of the same setting is the slowest way to
+  learn something. See "Seeds" under the working rules.
+- **Grow the world a little early rather than late**, as eval sees fit: a few rough edges are
+  acceptable, a model that is plainly wrong is not.
+
 ## Talking to each other
 
 - `uv run python -m lab msg <eval|data|train|human> "<subject>" --body "..."` puts a message file
@@ -120,12 +141,13 @@ blocks something you believe is right, tell the human; do not work around it.
 
 - **Evidence.** Every claim on the board names its evidence: the run, the check and its value,
   the picture file and window. "Looks better" is not a finding.
-- **One seed is one seed.** Every result so far is a single run. A difference below 0.02 on a
-  check, or below what a second seed of the same recipe shows, is noise. Anything that steers the
-  lab (a new champion, a gap declared fixed, a recipe adopted) has been seen twice.
-- **One question per run.** A run changes one thing against a known reference, and its `--note`
-  states the hypothesis before it starts. A negative result is recorded as carefully as a
-  positive one.
+- **Seeds.** A difference below 0.02 on a check, or below the run-to-run noise eval has recorded
+  for that check, is noise. A difference several times larger needs no second seed: act on it.
+  Repeat a run only for a close call that would change the champion, and start the repeat
+  alongside new experiments, never as a turn of its own.
+- **One question per run, several runs at once.** Each run changes one thing against a known
+  reference, and its `--note` states the hypothesis before it starts, so a batch of runs answers
+  a batch of questions. A negative result is recorded as carefully as a positive one.
 - **Cheapest test first.** A crash is found on the laptop in seconds (`--steps 4` with a tiny
   model), a dead idea in a short cloud run. Full-length runs are for confirming.
 - **Simplicity.** A small gain that adds a lot of code is not worth keeping, and the same result
