@@ -120,6 +120,12 @@ scores the run on the frozen benchmark (`sandwm.scorecard`: about thirty named c
 the pictures in `eval\bench\`, updates `gaps.md`, and adds a check for every new way of being
 wrong, so a later run that breaks it again is caught by the numbers.
 
+Passing every gate only says the model is right where the benchmarks look. So eval keeps a
+second list, `coverage.md`: situations the benchmarks do not contain (very long rollouts,
+intermittent actions, messy scenes), properties no check measures, numbers that cannot be
+trusted yet. It turns each entry into a small probe benchmark and checks, and what the champion
+fails there becomes an ordinary gap. `lab status` shows how many entries are still uncovered.
+
 ## What is enforced, and by what
 
 | rule | enforced by |
