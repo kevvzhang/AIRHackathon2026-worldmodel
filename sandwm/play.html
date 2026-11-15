@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sandwm play</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --wash: rgba(11, 11, 11, 0.05);
+    --accent: #2a78d6;
+    --accent-ink: #ffffff;
+    --danger: #d03b3b;
+    --series-1: #2a78d6;  /* imagination */
+    --series-2: #eb6834;  /* nothing changes since the sync */
+    --series-3: #1baf7a;  /* ceiling */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #f0efec;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --wash: rgba(255, 255, 255, 0.06);
+      --accent: #3987e5;
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --wash: rgba(255, 255, 255, 0.06);
+    --accent: #3987e5;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1440px; margin: 0 auto; padding: 16px 16px 40px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 12px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  .model-pick { display: flex; align-items: baseline; gap: 8px; }
+  .info { color: var(--ink-2); font-size: 13px; }
+  .status { margin-left: auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .status.error { color: var(--danger); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 12px; margin-bottom: 12px; }
+  .group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .group-label { color: var(--muted); font-size: 12px; margin-right: 2px; }
+  button, select {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 7px; padding: 5px 10px; cursor: pointer;
+  }
+  button:hover, select:hover { background: var(--wash); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px;
+                   box-shadow: 0 0 0 1px var(--border); }
+  kbd { font: 11px/1 ui-monospace, Consolas, monospace; color: var(--muted); margin-left: 6px; }
+  button.on kbd { color: inherit; opacity: 0.8; }
+  label.check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  input[type="range"] { width: 110px; accent-color: var(--accent); }
+  .num { font-variant-numeric: tabular-nums; color: var(--ink-2); min-width: 4.5em; display: inline-block; }
+
+  .panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .panel { padding: 10px; }
+  .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; min-height: 28px; }
+  .panel-head h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  .panel-head select { padding: 2px 6px; font-size: 13px; }
+  /* as large as the column allows, but short enough that the three worlds fit on screen with the controls */
+  canvas.world { display: block; width: min(100%, calc(100vh - 230px)); min-width: 192px; margin: 0 auto;
+                 aspect-ratio: 1; image-rendering: pixelated; border-radius: 6px;
+                 touch-action: none; cursor: crosshair; background: #10101a; }
+  .caption { color: var(--ink-2); font-size: 12.5px; margin-top: 6px; min-height: 2.9em; }
+  .legend-inline { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; }
+  .legend-inline span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+                                margin-right: 5px; vertical-align: -1px; background: var(--c); }
+
+  .drift { margin-top: 12px; padding: 12px 14px 8px; }
+  .drift-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 22px; margin-bottom: 4px; }
+  .drift-head h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  .drift-head .sub { color: var(--ink-2); font-size: 12.5px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 6px 0 2px; font-size: 13px; }
+  .legend .item { display: flex; align-items: baseline; gap: 7px; }
+  .legend .key { width: 16px; height: 2px; border-radius: 1px; background: var(--c); align-self: center; }
+  .legend .val { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 2.6em; }
+  .legend .name { color: var(--ink-2); }
+  .legend .extra { margin-left: auto; color: var(--ink-2); }
+  .chart-wrap { position: relative; }
+  svg.chart { display: block; width: 100%; height: 190px; overflow: visible; }
+  svg.chart .gridline { stroke: var(--grid); stroke-width: 1; }
+  svg.chart .baseline { stroke: var(--axis); stroke-width: 1; }
+  svg.chart .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  svg.chart .sync { stroke: var(--muted); stroke-width: 1; opacity: 0.55; }
+  svg.chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  svg.chart .cross { stroke: var(--ink-2); stroke-width: 1; }
+  svg.chart .dot { stroke: var(--surface); stroke-width: 2; }
+  .tooltip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+             border-radius: 8px; padding: 7px 10px; font-size: 12.5px; box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+             white-space: nowrap; display: none; }
+  .tooltip .t-head { color: var(--muted); margin-bottom: 3px; }
+  .tooltip .row { display: flex; align-items: center; gap: 7px; }
+  .tooltip .row .k { width: 12px; height: 2px; background: var(--c); }
+  .tooltip .row b { font-variant-numeric: tabular-nums; min-width: 2.6em; }
+  .tooltip .row span { color: var(--ink-2); }
+
+  details.help { margin-top: 12px; padding: 10px 14px; color: var(--ink-2); }
+  details.help summary { cursor: pointer; color: var(--ink); font-weight: 600; }
+  details.help ul { margin: 8px 0 2px; padding-left: 20px; }
+  details.help li { margin: 3px 0; }
+
+  @media (max-width: 820px) {
+    .panels { grid-template-columns: minmax(0, 1fr); }
+    .status { margin-left: 0; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>sandwm · play with the world model</h1>
+    <div class="model-pick">
+      <label for="run" class="group-label">model</label>
+      <select id="run" title="checkpoint to play with (runs/*/ckpt.pt)"></select>
+    </div>
+    <span class="info" id="info"></span>
+    <span class="status" id="status">connecting…</span>
+  </header>
+
+  <section class="card toolbar" aria-label="controls">
+    <div class="group" id="tools"><span class="group-label">brush</span></div>
+    <div class="group">
+      <button id="play" title="play / pause (Space)">Pause<kbd>Space</kbd></button>
+      <button id="step" title="one step with the current brush (N)">Step<kbd>N</kbd></button>
+      <input id="fps" type="range" min="1" max="30" value="12" aria-label="steps per second">
+      <span class="num" id="fps-label">12 / s</span>
+    </div>
+    <div class="group">
+      <button id="sync" title="show the model reality again: re-encode the latest true frames (S)">Sync<kbd>S</kbd></button>
+      <label class="group-label" for="auto-sync">auto-sync</label>
+      <select id="auto-sync" title="re-show reality to the model every N model steps">
+        <option value="0" selected>never (pure dream)</option>
+        <option value="1">every step</option>
+        <option value="4">every 4 steps</option>
+        <option value="16">every 16 steps</option>
+        <option value="64">every 64 steps</option>
+      </select>
+      <label class="check" title="off: the model is told the brush does nothing, while reality still gets painted (B)">
+        <input type="checkbox" id="sees-brush" checked> model sees the brush<kbd>B</kbd>
+      </label>
+    </div>
+    <div class="group">
+      <button id="new-scene" title="a new random scene, like the training data (R)">New scene<kbd>R</kbd></button>
+      <button id="empty-scene" title="an empty box (E)">Empty box<kbd>E</kbd></button>
+    </div>
+  </section>
+
+  <section class="panels">
+    <div class="card panel">
+      <div class="panel-head"><h2>Reality</h2><span class="info">the simulator</span></div>
+      <canvas class="world" id="c-truth" width="512" height="512" aria-label="simulator"></canvas>
+      <div class="caption">Left-drag paints with the selected brush, right-drag erases. Both worlds receive exactly the same brush actions.</div>
+    </div>
+    <div class="card panel">
+      <div class="panel-head"><h2>Imagination</h2><span class="info" id="dream-age"></span></div>
+      <canvas class="world" id="c-imagined" width="512" height="512" aria-label="world model imagination"></canvas>
+      <div class="caption" id="imagined-caption"></div>
+    </div>
+    <div class="card panel">
+      <div class="panel-head">
+        <h2 id="third-title">Reconstruction</h2>
+        <select id="third" aria-label="third panel">
+          <option value="recon">reconstruction</option>
+          <option value="mistakes">mistakes</option>
+        </select>
+      </div>
+      <canvas class="world" id="c-third" width="512" height="512" aria-label="third panel"></canvas>
+      <div class="caption" id="third-caption"></div>
+    </div>
+  </section>
+
+  <section class="card drift" aria-label="drift chart">
+    <div class="drift-head">
+      <h2>How well the imagination matches reality</h2>
+      <span class="sub">mIoU over materials, per model step · vertical lines mark syncs</span>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div class="chart-wrap" id="chart-wrap">
+      <svg class="chart" id="chart" role="img" aria-label="mIoU of imagination, nothing-changes baseline and ceiling over time"></svg>
+      <div class="tooltip" id="tooltip"></div>
+    </div>
+  </section>
+
+  <details class="card help" open>
+    <summary>What am I looking at?</summary>
+    <ul>
+      <li><b>Reality</b> is the falling-sand simulator the training data came from.</li>
+      <li><b>Imagination</b> is the world model dreaming. At a sync its encoder sees the true frames once; after that the
+        predictor only gets its own previous latent states plus your brush actions, and rolls forward step by step.
+        The picture is the decoder's reading of the imagined latent vector.</li>
+      <li><b>Reconstruction</b> is decode(encode(reality)): the most a single latent vector can show. Detail missing here
+        cannot appear in the imagination either. <b>Mistakes</b> highlights cells where imagination and reality differ.</li>
+      <li>In the chart, <b>nothing changes</b> is the baseline of a frozen latent (the world as it was at the last sync).
+        The model is doing useful physics when the blue line stays above the orange one.</li>
+      <li>Try: pour sand onto a ramp, fill a cup with water, erase a wall under a pile, or switch off
+        <i>model sees the brush</i> to check that the model really uses your actions.</li>
+    </ul>
+  </details>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// ---------------------------------------------------------------- state
+let info = null;            // model + world description from the server
+let size = 64;
+let palette = [];
+let tool = 3;               // index into info.tools (default: sand once known)
+let playing = true;
+let busy = false;
+let lastState = null;
+let cursor = { x: 32, y: 32, inside: false };
+let drawing = 0;            // 0 = not drawing, otherwise the tool being drawn with
+let points = [];            // {step, imagined, frozen, ceiling, since}
+let syncs = [];             // model steps at which reality was shown again
+let stepMs = 0;
+const WINDOW = 240;         // model steps visible in the chart
+const SERIES = [
+  { key: "imagined", name: "imagination (open loop)", color: "var(--series-1)" },
+  { key: "frozen", name: "nothing changes since the sync", color: "var(--series-2)" },
+  { key: "ceiling", name: "ceiling: decode(encode(reality))", color: "var(--series-3)" },
+];
+const MISTAKE_EXTRA = [255, 95, 162];   // the model imagines material where reality has none / something else
+const MISTAKE_MISSING = [240, 239, 236]; // reality has material that the imagination lacks
+
+// ---------------------------------------------------------------- server
+async function api(path, body) {
+  const opts = body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, auto_sync: +$("auto-sync").value, model_sees_brush: $("sees-brush").checked }),
+  };
+  const res = await fetch(path, opts);
+  const data = await res.json();
+  if (!res.ok || data.error) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function setStatus(text, error = false) {
+  const el = $("status");
+  el.textContent = text;
+  el.classList.toggle("error", error);
+}
+
+// ---------------------------------------------------------------- setup
+function applyInfo(data) {
+  info = data.info;
+  size = info.size;
+  palette = info.palette;
+  const sel = $("run");
+  sel.replaceChildren(...data.runs.map((name) => {
+    const o = document.createElement("option");
+    o.value = o.textContent = name;
+    o.selected = name === info.run;
+    return o;
+  }));
+  const params = info.params >= 1e6 ? (info.params / 1e6).toFixed(1) + "M" : Math.round(info.params / 1e3) + "k";
+  $("info").textContent = `${info.encoder} encoder · ${params} params · frame skip ${info.frame_skip} · ` +
+    `${info.train_steps.toLocaleString()} training steps on ${info.data}` +
+    (info.recon_weight ? ` · recon weight ${info.recon_weight}` : "");
+  buildTools();
+}
+
+function buildTools() {
+  const box = $("tools");
+  box.replaceChildren(box.firstElementChild);
+  if (tool >= info.tools.length || tool < 1) tool = Math.min(3, info.tools.length - 1);
+  info.tools.forEach((name, i) => {
+    if (i === 0) return;  // "none" is what happens when no button is held
+    const b = document.createElement("button");
+    b.dataset.tool = i;
+    const sw = document.createElement("span");
+    sw.className = "swatch";
+    const mat = name === "erase" ? 0 : info.materials.indexOf(name);
+    sw.style.background = `rgb(${palette[mat].join(",")})`;
+    const kbd = document.createElement("kbd");
+    kbd.textContent = String(i);
+    b.append(sw, document.createTextNode(name), kbd);
+    b.title = name === "erase" ? "erase anything (also: right-drag)" : `paint ${name} into empty cells`;
+    b.addEventListener("click", () => selectTool(i));
+    box.append(b);
+  });
+  selectTool(tool);
+}
+
+function selectTool(i) {
+  tool = i;
+  for (const b of $("tools").querySelectorAll("button")) b.classList.toggle("on", +b.dataset.tool === i);
+}
+
+// ---------------------------------------------------------------- rendering
+const offscreen = document.createElement("canvas");
+const offCtx = offscreen.getContext("2d");
+
+function decodeGrid(b64) {
+  const s = atob(b64);
+  const g = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) g[i] = s.charCodeAt(i);
+  return g;
+}
+
+function paintCanvas(canvas, rgbaFn) {
+  offscreen.width = offscreen.height = size;
+  const img = offCtx.createImageData(size, size);
+  rgbaFn(img.data);
+  offCtx.putImageData(img, 0, 0);
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
+  drawCursor(ctx, canvas);
+}
+
+function fillGrid(data, grid) {
+  for (let i = 0; i < grid.length; i++) {
+    const c = palette[grid[i]] || [255, 0, 255];
+    data[4 * i] = c[0]; data[4 * i + 1] = c[1]; data[4 * i + 2] = c[2]; data[4 * i + 3] = 255;
+  }
+}
+
+function fillMistakes(data, truth, imagined) {
+  const bg = palette[0];
+  for (let i = 0; i < truth.length; i++) {
+    let c;
+    if (truth[i] === imagined[i]) {
+      const t = palette[truth[i]];  // agreement: reality, dimmed
+      c = [0, 1, 2].map((j) => Math.round(bg[j] + 0.3 * (t[j] - bg[j])));
+    } else {
+      c = truth[i] === 0 ? MISTAKE_EXTRA : MISTAKE_MISSING;
+    }
+    data[4 * i] = c[0]; data[4 * i + 1] = c[1]; data[4 * i + 2] = c[2]; data[4 * i + 3] = 255;
+  }
+}
+
+function drawCursor(ctx, canvas) {
+  if (!cursor.inside && !drawing) return;
+  const cell = canvas.width / size;
+  const r = 1;  // brush radius used by the simulator
+  const x0 = Math.max(1, cursor.x - r), x1 = Math.min(size - 2, cursor.x + r);
+  const y0 = Math.max(1, cursor.y - r), y1 = Math.min(size - 2, cursor.y + r);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = drawing ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.6)";
+  ctx.strokeRect(x0 * cell + 1, y0 * cell + 1, (x1 - x0 + 1) * cell - 2, (y1 - y0 + 1) * cell - 2);
+}
+
+function render() {
+  if (!lastState) return;
+  const truth = decodeGrid(lastState.truth);
+  const imagined = decodeGrid(lastState.imagined);
+  const recon = decodeGrid(lastState.recon);
+  paintCanvas($("c-truth"), (d) => fillGrid(d, truth));
+  paintCanvas($("c-imagined"), (d) => fillGrid(d, imagined));
+  if ($("third").value === "recon") paintCanvas($("c-third"), (d) => fillGrid(d, recon));
+  else paintCanvas($("c-third"), (d) => fillMistakes(d, truth, imagined));
+}
+
+function updateText() {
+  const s = lastState;
+  if (!s || !info) return;
+  const skip = info.frame_skip;
+  const frames = s.since_sync * skip;
+  $("dream-age").textContent = s.since_sync === 0 ? "just synced with reality"
+    : `dreaming for ${s.since_sync} step${s.since_sync === 1 ? "" : "s"}` + (skip > 1 ? ` (${frames} frames)` : "");
+  const hidden = s.model_sees_brush ? "" : " The brush is currently hidden from the model.";
+  $("imagined-caption").textContent = (s.auto_sync
+    ? `The model is shown reality again every ${s.auto_sync} step${s.auto_sync === 1 ? "" : "s"}.`
+    : "The model has not seen reality since the last sync; press S to show it again.") +
+    (skip > 1 ? ` One model step spans ${skip} simulator frames.` : "") + hidden;
+  const third = $("third").value;
+  $("third-title").textContent = third === "recon" ? "Reconstruction" : "Mistakes";
+  const cap = $("third-caption");
+  if (third === "recon") {
+    cap.textContent = "decode(encode(reality)): what the latent vector can carry about the current frame. The imagination cannot be sharper than this.";
+  } else {
+    cap.replaceChildren(document.createTextNode("Cells where the imagination differs from reality."));
+    const leg = document.createElement("div");
+    leg.className = "legend-inline";
+    for (const [c, label] of [[MISTAKE_EXTRA, "imagined, not real"], [MISTAKE_MISSING, "real, not imagined (or wrong material)"]]) {
+      const sp = document.createElement("span");
+      sp.style.setProperty("--c", `rgb(${c.join(",")})`);
+      sp.textContent = label;
+      leg.append(sp);
+    }
+    cap.append(leg);
+  }
+  setStatus(`frame ${s.tick} · scene ${s.scene === "random" ? "#" + s.seed : "empty box"}` + (stepMs ? ` · ${stepMs.toFixed(0)} ms/step` : ""));
+}
+
+// ---------------------------------------------------------------- chart
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(name, attrs = {}, parent = null) {
+  const e = document.createElementNS(SVGNS, name);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.append(e);
+  return e;
+}
+const M = { l: 34, r: 10, t: 8, b: 22 };
+let chartGeom = null;
+
+function chartDomain() {
+  const last = points.length ? points[points.length - 1].step : 0;
+  const x0 = Math.max(0, last - WINDOW);
+  return [x0, x0 + WINDOW];
+}
+
+function drawChart() {
+  const svg = $("chart");
+  const w = svg.clientWidth, h = svg.clientHeight;
+  if (!w) return;
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  const [x0, x1] = chartDomain();
+  const pw = w - M.l - M.r, ph = h - M.t - M.b;
+  const X = (s) => M.l + (s - x0) / (x1 - x0) * pw;
+  const Y = (v) => M.t + (1 - v) * ph;
+  chartGeom = { X, Y, x0, x1, pw, ph, w, h };
+  svg.replaceChildren();
+
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    el("line", { class: v === 0 ? "baseline" : "gridline", x1: M.l, x2: w - M.r, y1: Y(v), y2: Y(v) }, svg);
+    el("text", { class: "tick", x: M.l - 6, y: Y(v) + 4, "text-anchor": "end" }, svg).textContent = v.toFixed(v % 1 ? 2 : 0);
+  }
+  const span = x1 - x0, stepTick = span > 160 ? 40 : 20;
+  for (let s = Math.ceil(x0 / stepTick) * stepTick; s <= x1; s += stepTick) {
+    el("text", { class: "tick", x: X(s), y: h - 6, "text-anchor": "middle" }, svg).textContent = s;
+  }
+  const visibleSyncs = syncs.filter((s) => s >= x0 && s <= x1);
+  if (visibleSyncs.length <= 60) {
+    for (const s of visibleSyncs) el("line", { class: "sync", x1: X(s), x2: X(s), y1: M.t, y2: M.t + ph }, svg);
+  }
+  const visible = points.filter((p) => p.step >= x0);
+  for (const ser of SERIES) {
+    let d = "", pen = false;
+    for (const p of visible) {
+      const v = p[ser.key];
+      if (v === null || v === undefined) { pen = false; continue; }
+      d += `${pen ? "L" : "M"}${X(p.step).toFixed(1)},${Y(v).toFixed(1)}`;
+      pen = true;
+    }
+    el("path", { class: "line", d, stroke: ser.color }, svg);
+  }
+  // end markers on the newest point
+  const lastP = visible[visible.length - 1];
+  if (lastP) for (const ser of SERIES) {
+    if (lastP[ser.key] == null) continue;
+    el("circle", { class: "dot", cx: X(lastP.step), cy: Y(lastP[ser.key]), r: 4, fill: ser.color }, svg);
+  }
+  svg.cross = el("line", { class: "cross", y1: M.t, y2: M.t + ph, visibility: "hidden" }, svg);
+  if (hoverPx !== null) showHover(hoverPx);  // the chart redraws every step; keep the readout where the pointer is
+}
+
+function buildLegend() {
+  const box = $("legend");
+  box.replaceChildren();
+  for (const ser of SERIES) {
+    const item = document.createElement("div");
+    item.className = "item";
+    item.style.setProperty("--c", ser.color);
+    const key = document.createElement("span"); key.className = "key";
+    const val = document.createElement("span"); val.className = "val"; val.id = "val-" + ser.key; val.textContent = "–";
+    const name = document.createElement("span"); name.className = "name"; name.textContent = ser.name;
+    item.append(key, val, name);
+    box.append(item);
+  }
+  const extra = document.createElement("div");
+  extra.className = "item extra";
+  extra.id = "latent-ratio";
+  extra.title = "squared distance of the imagined latent from the true frame's embedding, relative to the frozen latent's (below 1 = better than 'nothing changes')";
+  box.append(extra);
+}
+
+function fmt(v) { return v === null || v === undefined ? "–" : v.toFixed(2); }
+
+function updateLegend(m) {
+  for (const ser of SERIES) $("val-" + ser.key).textContent = fmt(m[ser.key]);
+  // A ratio only means something once reality has moved away from the synced frame; before that, show both errors.
+  $("latent-ratio").textContent = m.latent_mse_frozen > 0.05
+    ? `latent error vs. frozen: ${(m.latent_mse / m.latent_mse_frozen).toFixed(2)}×`
+    : `latent error ${m.latent_mse.toFixed(3)} (frozen ${m.latent_mse_frozen.toFixed(3)})`;
+}
+
+function addPoint(s) {
+  points.push({ step: s.step, since: s.since_sync, ...s.metrics });
+  if (points.length > 4 * WINDOW) points = points.slice(-2 * WINDOW);
+}
+
+let hoverPx = null;
+function onChartMove(ev) {
+  hoverPx = ev.clientX - $("chart").getBoundingClientRect().left;
+  showHover(hoverPx);
+}
+
+function showHover(px) {
+  const svg = $("chart"), tip = $("tooltip");
+  if (!chartGeom || !points.length) return;
+  const { X, x0, x1, pw } = chartGeom;
+  const s = x0 + (px - M.l) / pw * (x1 - x0);
+  let best = null;
+  for (const p of points) if (p.step >= x0 && (!best || Math.abs(p.step - s) < Math.abs(best.step - s))) best = p;
+  if (!best) return hideTip();
+  svg.cross.setAttribute("x1", X(best.step));
+  svg.cross.setAttribute("x2", X(best.step));
+  svg.cross.setAttribute("visibility", "visible");
+  tip.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "t-head";
+  head.textContent = `model step ${best.step} · ${best.since === 0 ? "synced" : best.since + " since sync"}`;
+  tip.append(head);
+  for (const ser of SERIES) {
+    const row = document.createElement("div"); row.className = "row";
+    row.style.setProperty("--c", ser.color);
+    const k = document.createElement("i"); k.className = "k";
+    const b = document.createElement("b"); b.textContent = fmt(best[ser.key]);
+    const n = document.createElement("span"); n.textContent = ser.name;
+    row.append(k, b, n);
+    tip.append(row);
+  }
+  tip.style.display = "block";
+  const wrap = $("chart-wrap").getBoundingClientRect();
+  const tx = X(best.step) + 14;
+  tip.style.left = (tx + tip.offsetWidth > wrap.width ? X(best.step) - tip.offsetWidth - 14 : tx) + "px";
+  tip.style.top = "6px";
+}
+function hideTip() {
+  hoverPx = null;
+  $("tooltip").style.display = "none";
+  if ($("chart").cross) $("chart").cross.setAttribute("visibility", "hidden");
+}
+
+// ---------------------------------------------------------------- applying server responses
+function applyState(s, { addToChart = false, resetChart = false } = {}) {
+  lastState = s;
+  if (resetChart) { points = []; syncs = [s.step]; addPoint(s); }
+  else if (addToChart) {
+    addPoint(s);
+    if (s.synced_after) syncs.push(s.step);
+  }
+  if (addToChart || resetChart || s.since_sync === 0) updateLegend(s.metrics);
+  render();
+  updateText();
+  drawChart();
+}
+
+// ---------------------------------------------------------------- actions
+let click = null;  // a press since the last step, so that a quick click between two steps still paints
+function currentAction() {
+  if (drawing) return [cursor.x, cursor.y, drawing];
+  if (click) return [click.x, click.y, click.tool];
+  return [cursor.x, cursor.y, 0];
+}
+
+async function doStep() {
+  if (busy) return;
+  busy = true;
+  const t0 = performance.now();
+  const action = currentAction();
+  click = null;
+  try {
+    const s = await api("/api/step", { action });
+    const dt = performance.now() - t0;
+    stepMs = stepMs ? 0.8 * stepMs + 0.2 * dt : dt;
+    applyState(s, { addToChart: s.model_stepped });
+  } catch (e) {
+    setStatus(e.message, true);
+    setPlaying(false);
+  } finally {
+    busy = false;
+  }
+}
+
+async function command(path, body = {}, opts = {}) {
+  while (busy) await new Promise((r) => setTimeout(r, 5));
+  busy = true;
+  try {
+    const data = await api(path, body);
+    if (data.info) applyInfo(data);
+    const s = data.state || data;
+    applyState(s, opts);
+  } catch (e) {
+    setStatus(e.message, true);
+  } finally {
+    busy = false;
+  }
+}
+
+function syncNow() {
+  return command("/api/sync", {}, {}).then(() => {
+    if (lastState) { syncs.push(lastState.step); drawChart(); }
+  });
+}
+const newScene = () => command("/api/reset", { scene: "random" }, { resetChart: true });
+const emptyScene = () => command("/api/reset", { scene: "empty" }, { resetChart: true });
+const sendSettings = () => api("/api/settings", {}).then(() => { if (lastState) { lastState.auto_sync = +$("auto-sync").value; lastState.model_sees_brush = $("sees-brush").checked; updateText(); } }).catch((e) => setStatus(e.message, true));
+
+function setPlaying(p) {
+  playing = p;
+  $("play").firstChild.textContent = p ? "Pause" : "Play";
+  $("play").classList.toggle("on", !p);
+}
+
+let nextTick = 0;
+async function loop() {
+  const now = performance.now();
+  if (playing && now >= nextTick && !busy) {
+    nextTick = now + 1000 / +$("fps").value;
+    await doStep();
+  }
+  requestAnimationFrame(loop);
+}
+
+// ---------------------------------------------------------------- input
+function cellFromEvent(ev, canvas) {
+  const r = canvas.getBoundingClientRect();
+  const x = Math.floor((ev.clientX - r.left) / r.width * size);
+  const y = Math.floor((ev.clientY - r.top) / r.height * size);
+  return { x: Math.max(0, Math.min(size - 1, x)), y: Math.max(0, Math.min(size - 1, y)) };
+}
+
+for (const canvas of document.querySelectorAll("canvas.world")) {
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  canvas.addEventListener("pointerdown", (ev) => {
+    canvas.setPointerCapture(ev.pointerId);
+    Object.assign(cursor, cellFromEvent(ev, canvas), { inside: true });
+    drawing = ev.button === 2 ? 1 : tool;  // tool 1 = erase
+    click = { x: cursor.x, y: cursor.y, tool: drawing };
+    render();
+  });
+  canvas.addEventListener("pointermove", (ev) => {
+    Object.assign(cursor, cellFromEvent(ev, canvas), { inside: true });
+    render();
+  });
+  canvas.addEventListener("pointerup", () => { drawing = 0; render(); });
+  canvas.addEventListener("pointercancel", () => { drawing = 0; render(); });
+  canvas.addEventListener("pointerleave", () => { if (!drawing) { cursor.inside = false; render(); } });
+}
+
+$("play").addEventListener("click", () => setPlaying(!playing));
+$("step").addEventListener("click", () => { setPlaying(false); doStep(); });
+$("fps").addEventListener("input", () => { $("fps-label").textContent = $("fps").value + " / s"; });
+$("sync").addEventListener("click", syncNow);
+$("auto-sync").addEventListener("change", sendSettings);
+$("sees-brush").addEventListener("change", sendSettings);
+$("new-scene").addEventListener("click", newScene);
+$("empty-scene").addEventListener("click", emptyScene);
+$("third").addEventListener("change", () => { render(); updateText(); });
+$("run").addEventListener("change", (e) => {
+  setStatus("loading " + e.target.value + "…");
+  command("/api/load", { run: e.target.value }, { resetChart: true });
+});
+$("chart").addEventListener("pointermove", onChartMove);
+$("chart").addEventListener("pointerleave", hideTip);
+window.addEventListener("resize", drawChart);
+
+// Controls hand the keyboard back after use, so the shortcuts keep working.
+document.addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (b && ev.detail) b.blur(); });
+for (const e of document.querySelectorAll("select, input")) e.addEventListener("change", () => e.blur());
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.target.matches("select, input[type=range]") || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const k = ev.key.toLowerCase();
+  if (k === " ") { ev.preventDefault(); setPlaying(!playing); }
+  else if (k === "n" || k === "arrowright") { ev.preventDefault(); setPlaying(false); doStep(); }
+  else if (k === "s") syncNow();
+  else if (k === "r") newScene();
+  else if (k === "e") emptyScene();
+  else if (k === "b") { $("sees-brush").checked = !$("sees-brush").checked; sendSettings(); }
+  else if (info && /^[1-9]$/.test(k) && +k < info.tools.length) selectTool(+k);
+});
+
+// ---------------------------------------------------------------- start
+buildLegend();
+fetch("/api/state").then((r) => r.json()).then((data) => {
+  applyInfo(data);
+  applyState(data.state, { resetChart: true });
+  setPlaying(true);
+  requestAnimationFrame(loop);
+}).catch((e) => setStatus("cannot reach the server: " + e.message, true));
+</script>
+</body>
+</html>

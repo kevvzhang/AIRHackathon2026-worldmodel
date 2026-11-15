@@ -18,7 +18,7 @@ uv sync                                                    # creates .venv (CPU 
 uv run python -m sandwm.generate --out data/basic64        # 2000 + 200 episodes, ~35 s, 15 MB
 uv run python -m sandwm.train --data data/basic64 --out runs/lewm     # ~20 min for 3000 steps
 uv run python -m sandwm.evaluate --run runs/lewm
-uv run pytest                                              # 29 tests, well under a minute
+uv run pytest                                              # 39 tests, under a minute
 ```
 
 Things to look at afterwards:
@@ -31,6 +31,32 @@ Things to look at afterwards:
 | `runs/lewm/eval/rollout_curves.png`, `metrics.json` | imagination error against horizon, probe R^2 |
 
 Every script has `--help`.
+
+## Playing with a trained model (`sandwm.play`)
+
+```bash
+uv run python -m sandwm.play --run runs/recon-k2        # opens http://127.0.0.1:8765/
+```
+
+A local page (the server only listens on 127.0.0.1) with three views of the same world:
+
+* **Reality** -- the simulator.
+* **Imagination** -- the world model dreaming: at a *sync* its encoder sees the true frames once,
+  after that the predictor runs on its own latent states plus your brush actions. Shown through
+  the decoder.
+* **Reconstruction** -- decode(encode(reality)), the most one latent vector can show -- or
+  **Mistakes**, the cells where imagination and reality differ.
+
+Your brush drives both worlds: left-drag paints with the selected tool (keys 1-4), right-drag
+erases. `Space` pauses, `N` steps once, `S` syncs, `R` / `E` start a new random scene or an empty
+box, `B` hides the brush from the model (the no-action ablation, live). Auto-sync re-shows reality
+every N model steps (every step = one-step prediction). A chart under the panels tracks the mIoU of
+the imagination against reality, next to the "nothing changes since the sync" baseline and the
+ceiling, so you can watch the dream drift. The model menu switches between any `runs/*/ckpt.pt`
+without resetting the world.
+
+The default is one CPU thread: at one frame at a time the small CNN model runs fastest that way
+(about 35 ms per step including the decoder, versus about 47 ms on four threads).
 
 ## Training on Modal GPUs (`cloud.py`)
 
