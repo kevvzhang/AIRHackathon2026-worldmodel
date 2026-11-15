@@ -25,6 +25,11 @@ without opening others.
    dynamics/changed@16". Different questions, not the same run again: ideas of your own, the
    datasets data has sent, whatever the gaps suggest. Several at once is the normal way of
    working here.
+   In every batch, at least one run tests a different kind of idea: a change to the
+   architecture or to the objective, not another setting of the recipe that is currently best.
+   Screen it short (about 5,000 steps). Most of these will lose, and that is what screening is
+   for. Tuning the best recipe is worth doing, but it is not the only place the next large gain
+   can come from.
 2. Build it as an option that leaves the default behaviour unchanged. Add tests.
 3. Smoke-test on the laptop. It has to train, save and evaluate:
    `uv run python -m sandwm.train --data {{HOME}}\data\basic64 --out runs\smoke --steps 4 --batch 8 --threads 2 ...`
