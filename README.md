@@ -22,7 +22,7 @@ uv sync                                                    # creates .venv (CPU 
 uv run python -m sandwm.generate --out data/basic64        # 2000 + 200 episodes, ~35 s, 15 MB
 uv run python -m sandwm.train --data data/basic64 --out runs/lewm     # ~20 min for 3000 steps
 uv run python -m sandwm.evaluate --run runs/lewm
-uv run pytest                                              # 39 tests, under a minute
+uv run pytest                                              # 77 tests
 ```
 
 Things to look at afterwards:
@@ -39,7 +39,8 @@ Every script has `--help`.
 ## Playing with a trained model (`sandwm.play`)
 
 ```bash
-uv run python -m sandwm.play --run runs/recon-k2        # opens http://127.0.0.1:8765/
+uv run python -m sandwm.play --run runs/recon-k2        # opens http://127.0.0.1:8765/ (or the next free port)
+uv run python -m sandwm.play --run .lab/runs/r0003-grid8-15k   # a run from the agent lab
 ```
 
 A local page (the server only listens on 127.0.0.1) with three views of the same world:
@@ -51,13 +52,25 @@ A local page (the server only listens on 127.0.0.1) with three views of the same
 * **Reconstruction** -- decode(encode(reality)), the most one latent vector can show -- or
   **Mistakes**, the cells where imagination and reality differ.
 
-Your brush drives both worlds: left-drag paints with the selected tool (keys 1-4), right-drag
+Your brush drives both worlds: left-drag paints with the selected tool (number keys), right-drag
 erases. `Space` pauses, `N` steps once, `S` syncs, `R` / `E` start a new random scene or an empty
 box, `B` hides the brush from the model (the no-action ablation, live). Auto-sync re-shows reality
 every N model steps (every step = one-step prediction). A chart under the panels tracks the mIoU of
 the imagination against reality, next to the "nothing changes since the sync" baseline and the
 ceiling, so you can watch the dream drift. The model menu switches between any `runs/*/ckpt.pt`
-without resetting the world.
+and `.lab/runs/*/ckpt.pt` (the agent lab's runs, its champion marked; `--runs-dir`, repeatable,
+picks other folders) without resetting the world, and picks up new runs as they arrive.
+
+Every run is played with the code it was trained with, simulator included. The lab keeps adding
+and removing model options and changing the simulator, so no single version of the code loads all
+of its runs. It tags each run's commit as `run/<name>`: for such a run the player copies the
+`sandwm` package at that commit out of git (once, into the system temp folder, `sandwm-play/`)
+and runs the simulator and the model in a separate process on that copy
+(`sandwm/playsession.py`, which is added to the copy). Runs without a tag use this checkout's
+code. The info line names the code (`code fc963d3` or `code this checkout`). Switching to a run on
+other code starts a new process (a few seconds) and carries the world over; between runs on the
+same code it takes a fraction of a second. New random scenes are drawn with the run's training
+terrain (its data's `terrain` options, as far as that code has them).
 
 The default is one CPU thread: at one frame at a time the small CNN model runs fastest that way
 (about 35 ms per step including the decoder, versus about 47 ms on four threads).

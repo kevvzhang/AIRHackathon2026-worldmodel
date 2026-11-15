@@ -153,7 +153,7 @@
     <h1>sandwm · play with the world model</h1>
     <div class="model-pick">
       <label for="run" class="group-label">model</label>
-      <select id="run" title="checkpoint to play with (runs/*/ckpt.pt)"></select>
+      <select id="run" title="checkpoint to play with (runs/*/ckpt.pt and .lab/runs/*/ckpt.pt)"></select>
     </div>
     <span class="info" id="info"></span>
     <span class="status" id="status">connecting…</span>
@@ -278,7 +278,11 @@ async function api(path, body) {
   return data;
 }
 
+let errorUntil = 0;  // an error stays on the status line for a while instead of being replaced by the next frame
 function setStatus(text, error = false) {
+  const now = performance.now();
+  if (!error && now < errorUntil) return;
+  errorUntil = error ? now + 10000 : 0;
   const el = $("status");
   el.textContent = text;
   el.classList.toggle("error", error);
@@ -289,19 +293,46 @@ function applyInfo(data) {
   info = data.info;
   size = info.size;
   palette = info.palette;
-  const sel = $("run");
-  sel.replaceChildren(...data.runs.map((name) => {
-    const o = document.createElement("option");
-    o.value = o.textContent = name;
-    o.selected = name === info.run;
-    return o;
-  }));
+  fillRuns(data.runs);
   const params = info.params >= 1e6 ? (info.params / 1e6).toFixed(1) + "M" : Math.round(info.params / 1e3) + "k";
   $("info").textContent = `${info.encoder} encoder · ${params} params · frame skip ${info.frame_skip} · ` +
     `${info.train_steps.toLocaleString()} training steps on ${info.data}` +
-    (info.recon_weight ? ` · recon weight ${info.recon_weight}` : "");
+    (info.recon_weight ? ` · recon weight ${info.recon_weight}` : "") +
+    (info.code ? ` · code ${info.code}` : "");
+  $("info").title = info.code_dir ? "played on the code in " + info.code_dir : "";
   buildTools();
 }
+
+let runsKey = "";
+function fillRuns(runs) {
+  runsKey = JSON.stringify(runs);
+  const sel = $("run");
+  const groups = new Map();  // one <optgroup> per runs folder, in the server's order
+  for (const r of runs) {
+    if (!groups.has(r.group)) {
+      const g = document.createElement("optgroup");
+      g.label = r.group + "/";
+      groups.set(r.group, g);
+    }
+    const o = document.createElement("option");
+    o.value = r.id;
+    o.textContent = r.name + (r.champion ? "  (lab champion)" : "");
+    o.selected = r.id === info.run;
+    groups.get(r.group).append(o);
+  }
+  sel.replaceChildren(...groups.values());
+  sel.title = info.run;
+}
+
+// New runs keep arriving (the agent lab fetches them into .lab/runs), so look again now and then.
+// Never while the menu is in use, and only touch it when the list has changed.
+setInterval(async () => {
+  if (document.hidden || document.activeElement === $("run") || !info) return;
+  try {
+    const data = await api("/api/state");
+    if (JSON.stringify(data.runs) !== runsKey && document.activeElement !== $("run")) fillRuns(data.runs);
+  } catch { /* the status line already reports a lost server */ }
+}, 15000);
 
 function buildTools() {
   const box = $("tools");
@@ -616,8 +647,10 @@ async function command(path, body = {}, opts = {}) {
     if (data.info) applyInfo(data);
     const s = data.state || data;
     applyState(s, opts);
+    return true;
   } catch (e) {
     setStatus(e.message, true);
+    return false;
   } finally {
     busy = false;
   }
@@ -684,8 +717,11 @@ $("new-scene").addEventListener("click", newScene);
 $("empty-scene").addEventListener("click", emptyScene);
 $("third").addEventListener("change", () => { render(); updateText(); });
 $("run").addEventListener("change", (e) => {
+  errorUntil = 0;
   setStatus("loading " + e.target.value + "…");
-  command("/api/load", { run: e.target.value }, { resetChart: true });
+  command("/api/load", { run: e.target.value }, { resetChart: true }).then((ok) => {
+    if (!ok) e.target.value = info.run;  // the old model is still loaded; say so in the menu too
+  });
 });
 $("chart").addEventListener("pointermove", onChartMove);
 $("chart").addEventListener("pointerleave", hideTip);

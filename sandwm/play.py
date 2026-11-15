@@ -1,6 +1,7 @@
-"""Play with a trained world model in the browser.
+"""Play with trained world models in the browser.
 
-    uv run python -m sandwm.play --run runs/fix-recon1
+    uv run python -m sandwm.play                                  # the newest run under runs/ and .lab/runs/
+    uv run python -m sandwm.play --run .lab/runs/r0003-grid8-15k
 
 Opens a local page showing the real simulator and the world model's imagination side by side.
 Your brush drives both: reality steps the falling-sand simulator, while the model only gets the
@@ -8,200 +9,221 @@ embedding of the last frame it was shown plus your actions, and rolls its latent
 its own predictions.  The decoder turns that imagined latent into a picture.  "Sync" shows
 the model reality again (re-encodes the latest true frames); between syncs it is dreaming.
 
-Everything runs locally on the CPU (about 30 ms per step for the small CNN model) and the server
-only listens on 127.0.0.1.
+The model menu lists every run with a checkpoint under runs/ and under .lab/runs/ (the agent
+lab's runs, with the lab's current champion marked).
+
+Every run is played with the code it was trained with.  The agent lab tags the commit of each run
+as run/<name>; for such a run the sandwm package as of that commit is copied out of git (once, into
+the system's temp folder) and the simulator and the model run in a separate process on that copy
+(sandwm.playsession).  Runs without a tag run on this checkout's code.  Switching to a run that
+needs other code starts a new model process and carries the world over.
+
+Everything runs locally on the CPU (about 15-30 ms per step for the small CNN models) and the
+server only listens on 127.0.0.1.  This process only serves the page; it does not load torch.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
+import io
 import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
 import threading
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import numpy as np
-import torch
-
-from .data import encode_actions, observe
-from .evaluate import decode, load_run, miou
-from .materials import MATERIAL_SETS
-from .models import count_params
-from .scenes import random_scene
-from .sim import SandSim
-
 PAGE = Path(__file__).with_name("play.html")
+SESSION_MODULE = Path(__file__).with_name("playsession.py")
+CHECKOUT = Path(__file__).resolve().parent.parent  # the folder holding this sandwm package
+DEFAULT_RUNS_DIRS = (Path("runs"), Path(".lab/runs"))
 
 
-def find_runs(runs_dir: Path) -> list[str]:
-    """Names of the run directories under ``runs_dir`` that hold a checkpoint."""
-    return sorted(p.parent.name for p in Path(runs_dir).glob("*/ckpt.pt"))
+# --- runs ---------------------------------------------------------------------------------------
+def run_id(run: Path) -> str:
+    """How the page names a run: its path relative to the working directory where possible."""
+    run = Path(run).resolve()
+    try:
+        return run.relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return run.as_posix()
 
 
-class PlaySession:
-    """One simulator world and one world model, driven by the same stream of brush actions.
-
-    Bookkeeping is at the model's time resolution: with frame skip k, every k raw actions make one
-    model step.  ``frames`` holds the true grids and ``latents`` the model's state at the last few
-    model steps; ``actions`` holds the encoded action block taken at each of those steps, so that
-    ``latents[i]`` and ``actions[i]`` line up as in ``JEPA.predict``.
-    """
-
-    def __init__(self, run: Path, device: str = "cpu") -> None:
-        self.device = torch.device(device)
-        self.sim: SandSim | None = None
-        self.auto_sync = 0  # model steps between automatic syncs; 0 = never
-        self.model_sees_brush = True
-        self.load(run)
-
-    # --- model ----------------------------------------------------------------------------
-    def load(self, run: Path) -> None:
-        run = Path(run)
-        model, decoder, ckpt = load_run(run, self.device)
-        meta = ckpt["data_meta"]
-        ms, size = MATERIAL_SETS[meta["materials"]], int(meta["size"])
-        same_world = self.sim is not None and ms is self.ms and size == self.size
-        self.run, self.model, self.decoder, self.ckpt = run, model, decoder, ckpt
-        self.ms, self.size, self.sim_kwargs = ms, size, dict(meta.get("sim", {}))
-        self.skip, self.history = int(ckpt["args"]["frame_skip"]), model.cfg.history
-        if same_world:  # keep the current world and show it to the new model (its frame skip may differ)
-            self.frames = [self.sim.grid[0].copy()]
-            self.actions, self.pending = [], []
-            self.sync()
-        else:
-            self.reset()
-
-    def info(self) -> dict:
-        cfg, args = self.model.cfg, self.ckpt["args"]
-        return {
-            "run": self.run.name,
-            "train_steps": int(self.ckpt["step"]),
-            "frame_skip": self.skip,
-            "history": self.history,
-            "encoder": cfg.encoder,
-            "params": count_params(self.model),
-            "embed_dim": cfg.embed_dim,
-            "recon_weight": float(args.get("recon_weight", 0.0)),
-            "data": Path(str(args["data"])).name,
-            "materials": list(self.ms.names),
-            "tools": list(self.ms.tools),
-            "palette": self.ms.palette.tolist(),
-            "size": self.size,
-        }
-
-    @torch.no_grad()
-    def _encode(self, grids: np.ndarray) -> torch.Tensor:
-        """True grids (T, H, W) -> embeddings (1, T, D)."""
-        return self.model.encode(observe(torch.from_numpy(np.ascontiguousarray(grids[None])).to(self.device), self.ms.palette))
-
-    def _decode(self, z: torch.Tensor) -> np.ndarray:
-        """Embedding (D,) -> material grid (H, W)."""
-        return decode(self.decoder, z[None])[0]
-
-    # --- world --------------------------------------------------------------------------------
-    def reset(self, scene: str = "random", seed: int | None = None) -> None:
-        self.seed = int(np.random.default_rng().integers(1 << 31)) if seed is None else int(seed)
-        rng = np.random.default_rng(self.seed)
-        grid = random_scene(rng, self.size, self.ms) if scene == "random" else np.zeros((self.size,) * 2, np.uint8)
-        self.scene = scene
-        self.sim = SandSim(1, self.size, self.ms, seed=[self.seed, 1], **self.sim_kwargs)
-        self.sim.reset(grid[None])
-        self.tick = 0  # raw simulator frames since the reset
-        self.step_count = 0  # model steps since the reset
-        self.frames = [self.sim.grid[0].copy()]
-        self.actions: list[torch.Tensor] = []
-        self.pending: list[np.ndarray] = []
-        self.sync()
-
-    def sync(self) -> None:
-        """Show the model reality: replace its latent history by the embeddings of the true frames."""
-        self.latents = self._encode(np.stack(self.frames))[0]  # (T, D)
-        self.frozen_latent = self.imagined_latent = self.latents[-1]
-        self.frozen = self._decode(self.frozen_latent)  # what "nothing changes from here" looks like
-        self.since_sync = 0
-        self.synced_at = self.step_count
-
-    def step(self, action) -> dict:
-        """Apply one raw brush action ``(x, y, tool)`` to reality, and to the model every k-th frame."""
-        action = np.asarray(action, dtype=np.int16).reshape(3)
-        self.sim.step(action[None])
-        self.tick += 1
-        self.pending.append(action)
-        if len(self.pending) < self.skip:
-            return self.snapshot(model_stepped=False)
-
-        block = np.stack(self.pending)  # (k, 3)
-        self.pending = []
-        if not self.model_sees_brush:
-            block = block.copy()
-            block[:, 2] = 0
-        a = encode_actions(torch.from_numpy(block).to(self.device), self.size, len(self.ms.tools))  # (k * A,)
-        self.actions = (self.actions + [a])[-self.history :]
-        ctx = self.latents[-len(self.actions) :]
-        with torch.no_grad():
-            nxt = self.model.predict(ctx[None], torch.stack(self.actions[-len(ctx) :])[None])[0, -1]
-        self.latents = torch.cat([self.latents, nxt[None]])[-self.history :]
-        self.frames = (self.frames + [self.sim.grid[0].copy()])[-self.history :]
-        self.step_count += 1
-        self.since_sync += 1
-        self.imagined_latent = nxt
-        synced = bool(self.auto_sync and self.since_sync >= self.auto_sync)
-        if synced:
-            snap = self.snapshot(model_stepped=True)  # report the imagination before it is corrected
-            self.sync()
-            snap["synced_after"] = True
-            return snap
-        return self.snapshot(model_stepped=True)
-
-    # --- reporting -------------------------------------------------------------------------
-    def snapshot(self, model_stepped: bool = False) -> dict:
-        """Everything the page shows.  ``model_stepped`` marks a new point for the drift chart."""
-        truth = self.sim.grid[0]
-        z_true = self._encode(truth[None])[0, 0]
-        imagined, recon = decode(self.decoder, torch.stack([self.imagined_latent, z_true]))  # one decoder call
-        K = len(self.ms)
-        return {
-            "tick": self.tick,
-            "step": self.step_count,
-            "since_sync": self.since_sync,
-            "synced_at": self.synced_at,
-            "seed": self.seed,
-            "scene": self.scene,
-            "auto_sync": self.auto_sync,
-            "model_sees_brush": self.model_sees_brush,
-            "model_stepped": model_stepped,
-            "truth": _b64(truth),
-            "imagined": _b64(imagined),
-            "recon": _b64(recon),
-            "metrics": {  # mIoU against reality: open-loop imagination, "nothing changes since the sync", ceiling
-                "imagined": miou(imagined, truth, K),
-                "frozen": miou(self.frozen, truth, K),
-                "ceiling": miou(recon, truth, K),
-                "latent_mse": float((self.imagined_latent - z_true).square().mean()),
-                "latent_mse_frozen": float((self.frozen_latent - z_true).square().mean()),
-            },
-        }
-
-
-def _b64(grid: np.ndarray) -> str:
-    return base64.b64encode(np.ascontiguousarray(grid, dtype=np.uint8).tobytes()).decode("ascii")
-
-
-def _nan_to_none(obj):
-    """JSON has no NaN (mIoU is NaN on a frame with no material at all)."""
-    if isinstance(obj, float) and obj != obj:
+def champion(runs_dir: Path) -> str | None:
+    """The agent lab's champion, when ``runs_dir`` is a lab's runs folder (its board says which run)."""
+    f = Path(runs_dir) / ".." / "board" / "champion.txt"
+    try:
+        words = f.read_text(encoding="utf-8").split()
+    except OSError:
         return None
-    if isinstance(obj, dict):
-        return {k: _nan_to_none(v) for k, v in obj.items()}
-    return obj
+    return words[0] if words else None
+
+
+def find_runs(runs_dirs) -> list[dict]:
+    """Every run directory with a checkpoint under the given folder(s), grouped by folder."""
+    found = []
+    for d in [runs_dirs] if isinstance(runs_dirs, (str, Path)) else runs_dirs:
+        d = Path(d)
+        best = champion(d)
+        for ckpt in sorted(d.glob("*/ckpt.pt")):
+            found.append({"id": run_id(ckpt.parent), "name": ckpt.parent.name, "group": run_id(d),
+                          "champion": ckpt.parent.name == best})
+    return found
+
+
+# --- code -----------------------------------------------------------------------------------------
+def _git(*args: str) -> str | None:
+    try:
+        r = subprocess.run(["git", *args], cwd=CHECKOUT, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def run_code(run) -> tuple[str | None, str]:
+    """Which code a run is played with: (git tree of sandwm/ at the commit tagged run/<name>, that
+    commit), or (None, "this checkout") for a run without a tag."""
+    commit = _git("rev-parse", "-q", "--verify", f"refs/tags/run/{Path(run).name}^{{commit}}")
+    tree = commit and _git("rev-parse", "-q", "--verify", f"{commit}:sandwm")
+    return (tree, commit[:7]) if tree else (None, "this checkout")
+
+
+def code_snapshot(tree: str) -> Path:
+    """A folder holding the sandwm package as of git tree ``tree`` (copied out once and kept), with
+    this checkout's playsession.py added, so that the player speaks the same language on any code."""
+    root = Path(tempfile.gettempdir()) / "sandwm-play" / tree[:16]
+    if not (root / "sandwm" / "__init__.py").is_file():
+        shutil.rmtree(root, ignore_errors=True)
+        tmp = root.with_name(f"{root.name}.{os.getpid()}.tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        tar = subprocess.run(["git", "archive", "--format=tar", "--prefix=sandwm/", tree], cwd=CHECKOUT,
+                             capture_output=True, check=True, timeout=60).stdout
+        with tarfile.open(fileobj=io.BytesIO(tar)) as t:
+            t.extractall(tmp, filter="data")
+        try:
+            tmp.rename(root)
+        except OSError:  # another player got there first
+            shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copyfile(SESSION_MODULE, root / "sandwm" / "playsession.py")
+    return root
+
+
+class Worker:
+    """A model process (``python -m sandwm.playsession``) on the sandwm package found in ``code_root``.
+    One JSON line each way per request; the process ends when its stdin closes."""
+
+    def __init__(self, code_root: Path, run: str, threads: int = 1, device: str = "cpu") -> None:
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join([str(code_root)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        # -P: do not put the working directory first on sys.path, or a sandwm/ there would win over code_root
+        self.proc = subprocess.Popen(
+            [sys.executable, "-P", "-m", "sandwm.playsession", "--run", run, "--threads", str(threads), "--device", device],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True, encoding="utf-8")
+        self.hello = self._read()  # the reply to loading the run
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
+
+    def _read(self) -> dict:
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError(f"the model process ended (exit code {self.proc.wait()}); its error is in the terminal")
+        return json.loads(line)
+
+    def call(self, cmd: str, body: dict | None = None) -> dict:
+        try:
+            self.proc.stdin.write(json.dumps({"cmd": cmd, "body": body or {}}) + "\n")
+            self.proc.stdin.flush()
+        except OSError as e:
+            raise RuntimeError(f"the model process is gone ({e})") from e
+        return self._read()
+
+    def close(self) -> None:
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+
+
+class Player:
+    """The model process of the current run; replaced by a new one when a run needs other code."""
+
+    def __init__(self, threads: int = 1, device: str = "cpu") -> None:
+        self.threads, self.device = threads, device
+        self.worker: Worker | None = None
+        self.tree: str | None = None
+        self.run, self.code = "", ""
+
+    def _checked(self, reply: dict) -> dict:
+        if "error" in reply:
+            raise ValueError(reply["error"])
+        if "info" in reply:
+            reply["info"].update(run=self.run, code=self.code)
+        return reply
+
+    def call(self, cmd: str, body: dict | None = None) -> dict:
+        if self.worker is None or not self.worker.alive():
+            raise RuntimeError("the model process has stopped; pick a model in the menu to start it again")
+        return self._checked(self.worker.call(cmd, body))
+
+    def load(self, run: str, body: dict | None = None) -> dict:
+        """Play ``run`` (a run id), on its own code, keeping the world when it fits."""
+        body = {k: v for k, v in (body or {}).items() if k != "run"}
+        tree, code = run_code(run)
+        alive = self.worker is not None and self.worker.alive()
+        if alive and tree == self.tree:  # same code: the same process loads the other checkpoint
+            reply = self.worker.call("load", {**body, "run": run})
+            if "error" in reply:
+                raise ValueError(reply["error"])
+            self.run, self.code = run, code
+            return self._checked(reply)
+
+        world = None
+        if alive:
+            world = self.worker.call("world")
+            world = None if "error" in world else world
+        new = Worker(CHECKOUT if tree is None else code_snapshot(tree), run, self.threads, self.device)
+        if "error" in new.hello:
+            new.close()
+            raise ValueError(new.hello["error"])
+        reply = new.call("adopt", {**body, **world}) if world else new.hello
+        if "error" in reply:
+            new.close()
+            raise ValueError(reply["error"])
+        old, self.worker, self.tree, self.run, self.code = self.worker, new, tree, run, code
+        if old is not None:
+            old.close()
+        return self._checked(reply)
+
+    def close(self) -> None:
+        if self.worker is not None:
+            self.worker.close()
+            self.worker = None
 
 
 # --- HTTP ---------------------------------------------------------------------------------------
-def make_handler(session: PlaySession, runs_dir: Path):
-    lock = threading.Lock()
+class Server(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets a second server bind a port that is already serving, so a busy
+    # port would not be noticed (and requests would keep going to the first server).
+    allow_reuse_address = sys.platform != "win32"
+
+
+COMMANDS = {"/api/step": "step", "/api/sync": "sync", "/api/reset": "reset", "/api/settings": "settings"}
+
+
+def make_handler(player: Player, runs_dirs):
+    lock = threading.Lock()  # one request at a time reaches the model process
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # keep the terminal quiet; errors still print
@@ -216,14 +238,18 @@ def make_handler(session: PlaySession, runs_dir: Path):
             self.wfile.write(body)
 
         def _json(self, obj, status: HTTPStatus = HTTPStatus.OK) -> None:
-            self._send(json.dumps(_nan_to_none(obj)).encode(), "application/json", status)
+            self._send(json.dumps(obj).encode(), "application/json", status)
 
         def do_GET(self):
             if self.path in ("/", "/index.html"):
                 self._send(PAGE.read_bytes(), "text/html; charset=utf-8")
             elif self.path == "/api/state":
-                with lock:
-                    self._json({"info": session.info(), "runs": find_runs(runs_dir), "state": session.snapshot()})
+                try:
+                    with lock:
+                        reply = player.call("state")
+                    self._json({**reply, "runs": find_runs(runs_dirs)})
+                except Exception as e:
+                    self._json({"error": f"{type(e).__name__}: {e}"}, HTTPStatus.BAD_REQUEST)
             else:
                 self._send(b"not found", "text/plain", HTTPStatus.NOT_FOUND)
 
@@ -231,28 +257,18 @@ def make_handler(session: PlaySession, runs_dir: Path):
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
                 with lock:
-                    if "auto_sync" in body:
-                        session.auto_sync = max(0, int(body["auto_sync"]))
-                    if "model_sees_brush" in body:
-                        session.model_sees_brush = bool(body["model_sees_brush"])
-                    if self.path == "/api/step":
-                        self._json(session.step(body["action"]))
-                    elif self.path == "/api/sync":
-                        session.sync()
-                        self._json(session.snapshot())
-                    elif self.path == "/api/reset":
-                        session.reset(body.get("scene", "random"), body.get("seed"))
-                        self._json(session.snapshot())
-                    elif self.path == "/api/load":
-                        name = str(body["run"])
-                        if name not in find_runs(runs_dir):
-                            raise ValueError(f"no checkpoint for run {name!r} in {runs_dir}")
-                        session.load(runs_dir / name)
-                        self._json({"info": session.info(), "runs": find_runs(runs_dir), "state": session.snapshot()})
-                    elif self.path == "/api/settings":
-                        self._json({"ok": True})
+                    if self.path == "/api/load":
+                        runs = find_runs(runs_dirs)
+                        name = str(body.get("run"))
+                        if name not in {r["id"] for r in runs}:  # only runs the menu offers, never an arbitrary path
+                            raise ValueError(f"no checkpoint for run {name!r}")
+                        reply = {**player.load(name, body), "runs": runs}
+                    elif self.path in COMMANDS:
+                        reply = player.call(COMMANDS[self.path], body)
                     else:
                         self._send(b"not found", "text/plain", HTTPStatus.NOT_FOUND)
+                        return
+                self._json(reply)
             except Exception as e:  # report to the page rather than dropping the connection
                 self._json({"error": f"{type(e).__name__}: {e}"}, HTTPStatus.BAD_REQUEST)
 
@@ -261,8 +277,9 @@ def make_handler(session: PlaySession, runs_dir: Path):
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--run", type=Path, default=None, help="run directory with ckpt.pt (default: newest under --runs-dir)")
-    p.add_argument("--runs-dir", type=Path, default=Path("runs"), help="where the page looks for other runs to switch to")
+    p.add_argument("--run", type=Path, default=None, help="run directory with ckpt.pt (default: the newest in the menu)")
+    p.add_argument("--runs-dir", type=Path, action="append", default=None,
+                   help="a folder of runs for the model menu; repeat for several (default: runs and .lab/runs)")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--threads", type=int, default=1,
                    help="CPU threads for the model; one frame at a time runs fastest on one (more may help a large ViT)")
@@ -270,29 +287,36 @@ def main(argv=None) -> None:
     p.add_argument("--device", default="cpu")
     args = p.parse_args(argv)
 
-    torch.set_num_threads(args.threads)
+    runs_dirs = args.runs_dir or [d for d in DEFAULT_RUNS_DIRS if d.is_dir()]
     run = args.run
     if run is None:
-        ckpts = sorted(args.runs_dir.glob("*/ckpt.pt"), key=lambda q: q.stat().st_mtime)
+        ckpts = sorted((q for d in runs_dirs for q in d.glob("*/ckpt.pt")), key=lambda q: q.stat().st_mtime)
         if not ckpts:
-            raise SystemExit(f"no runs with a ckpt.pt under {args.runs_dir}; pass --run")
+            raise SystemExit(f"no runs with a ckpt.pt under {', '.join(map(str, runs_dirs)) or 'runs'}; pass --run")
         run = ckpts[-1].parent
-    if args.run is not None and run.parent.resolve() != args.runs_dir.resolve():
-        args.runs_dir = run.parent  # so the run picker lists the chosen run's siblings
-    session = PlaySession(run, args.device)
+    if not (run / "ckpt.pt").is_file():
+        raise SystemExit(f"no ckpt.pt in {run}")
+    if not any(run.parent.resolve() == d.resolve() for d in runs_dirs):
+        runs_dirs.append(run.parent)  # so the menu lists the chosen run and its siblings
+
+    player = Player(args.threads, args.device)
+    try:
+        info = player.load(run_id(run))["info"]
+    except (ValueError, RuntimeError) as e:
+        raise SystemExit(f"cannot play {run}: {e}")
 
     for port in range(args.port, args.port + 20):
         try:
-            server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(session, args.runs_dir))
+            server = Server(("127.0.0.1", port), make_handler(player, runs_dirs))
             break
         except OSError:
             continue
     else:
+        player.close()
         raise SystemExit(f"no free port in {args.port}..{args.port + 19}")
     url = f"http://127.0.0.1:{port}/"
-    info = session.info()
-    print(f"world model: {info['run']} ({info['encoder']} encoder, {info['params']:,} params, frame skip {info['frame_skip']}, "
-          f"{info['train_steps']} training steps)")
+    print(f"world model: {info['run']} (code {info['code']}; {info['encoder']} encoder, {info['params']:,} params, "
+          f"frame skip {info['frame_skip']}, {info['train_steps']} training steps)")
     print(f"open {url}   (Ctrl+C to stop)", flush=True)
     if not args.no_browser:
         webbrowser.open(url)
@@ -302,6 +326,7 @@ def main(argv=None) -> None:
         pass
     finally:
         server.server_close()
+        player.close()
 
 
 if __name__ == "__main__":
