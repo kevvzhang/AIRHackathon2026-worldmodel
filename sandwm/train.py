@@ -118,6 +118,8 @@ def main(argv=None) -> None:
                         "decoder as a mere probe; in this world that encodes the scenery and little else (see README)")
     p.add_argument("--decoder-batch", type=int, default=64, help="frames per step used to train the probe decoder")
     p.add_argument("--max-episodes", type=int, default=None, help="use only the first N training episodes")
+    p.add_argument("--max-minutes", type=float, default=0.0,
+                   help="stop training after this many minutes and save, even if --steps is not reached (0 = no limit)")
     p.add_argument("--eval-every", type=int, default=250)
     p.add_argument("--log-every", type=int, default=25)
     p.add_argument("--seed", type=int, default=0)
@@ -216,9 +218,13 @@ def main(argv=None) -> None:
                 log(row)
                 print(f"step {step:5d}/{args.steps} | pred {row['pred']:.4f} sigreg {row['sigreg']:.3f} dec {row['dec']:.3f} | "
                       f"{per_step:.2f} s/step, eta {(args.steps - step) * per_step / 60:.1f} min", flush=True)
-            if step % args.eval_every == 0 or step == args.steps:
+            out_of_time = args.max_minutes > 0 and time.perf_counter() - t_start > 60 * args.max_minutes
+            if step % args.eval_every == 0 or step == args.steps or out_of_time:
                 run_validation(step)
                 save(step)
+            if out_of_time and step < args.steps:
+                print(f"stopping at step {step} of {args.steps}: the limit of {args.max_minutes:g} minutes is reached", flush=True)
+                break
     except KeyboardInterrupt:
         print("interrupted -- saving checkpoint")
         save(step)
