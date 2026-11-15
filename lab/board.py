@@ -93,6 +93,18 @@ def gaps(board: Path) -> list[dict]:
     return found
 
 
+def coverage(board: Path) -> list[dict]:
+    """The entries of coverage.md: headings of the form  ### C-001 | title | priority | status."""
+    path = board / "coverage.md"
+    found = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            m = re.match(r"###\s+(C-\d+)\s*\|\s*(.*?)\s*\|\s*(\w+)\s*\|\s*(\w[\w ]*)\s*$", line)
+            if m:
+                found.append({"id": m[1], "title": m[2], "priority": m[3].lower(), "status": m[4].strip().lower()})
+    return found
+
+
 def tracks(board: Path) -> list[dict]:
     """The entries of tracks.md: headings of the form  ### T-001 | title | status."""
     path = board / "tracks.md"

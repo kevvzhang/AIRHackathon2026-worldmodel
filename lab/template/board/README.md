@@ -11,6 +11,7 @@ and when, and nothing that gets overwritten is lost.
     limits.toml     the GPU budget                             (human)
     ledger.jsonl    every cloud job and what it cost           (written by the tooling)
     gaps.md         what the model gets wrong, most important first   (eval)
+    coverage.md     what the evaluation does not cover yet             (eval)
     gates.toml      what "roughly right" means in numbers      (eval)
     champion.txt    the best run so far                        (eval)
     features.md     what the world learns next                 (eval)

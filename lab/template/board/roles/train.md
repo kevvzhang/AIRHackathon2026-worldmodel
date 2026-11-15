@@ -18,6 +18,10 @@ without opening others.
 3. Verdicts from eval.
 4. Your own ideas.
 
+A run that passes every gate has only been tested where the benchmarks look. When you suspect
+the model is fragile somewhere no check looks (rollouts far ahead, a kind of scene, a pattern of
+actions), tell eval: it keeps the list of what is not tested in `coverage.md`.
+
 ## The experiment loop
 
 1. Choose a batch of questions, and state each so that a run can refute it. For example: "a 4x4

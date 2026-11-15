@@ -135,6 +135,11 @@ def status_text(lab: Lab, role: str) -> str:
     still_open = [g for g in found if g["status"] not in ("fixed", "closed", "wontfix")]
     worst = ", ".join(f"{g['id']} {g['title']}" for g in still_open if g["severity"] == "blocker")
     lines.append(f"gaps      {len(still_open)} open of {len(found)}" + (f"; blockers: {worst}" if worst else ""))
+    unseen = [c for c in boards.coverage(board) if c["status"] != "covered"]
+    if boards.coverage(board):
+        first = ", ".join(f"{c['id']} {c['title']}" for c in unseen if c["priority"] == "high")
+        lines.append(f"coverage  {len(unseen)} situation(s) the evaluation does not cover yet, of {len(boards.coverage(board))} listed"
+                     + (f"; high: {first}" if first else ""))
     side = boards.tracks(board)
     if side:
         active = ", ".join(f"{t['id']} {t['title']}" for t in side if t["status"] == "active") or "none"

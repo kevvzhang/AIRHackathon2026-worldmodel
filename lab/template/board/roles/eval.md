@@ -12,6 +12,7 @@ modelled well enough to grow.
 - `gates.toml`: the thresholds that define "roughly right".
 - `champion.txt`: the run you would hand to someone today (first word = run name).
 - `features.md`: what the world should learn next.
+- `coverage.md`: what the evaluation does not cover yet (see "What the evaluation does not see").
 - Code: `sandwm/scorecard.py` (the checks), `evaluate.py`, `compare.py`, `metrics.py`, `viz.py`,
   and their tests.
 
@@ -123,13 +124,73 @@ A track is a large idea planned by the research agent and tried beside the main 
 
 If you see the need for something of a different kind yourself, propose it to research.
 
+## What the evaluation does not see
+
+You look for two kinds of gap. The first is what the model gets wrong where you look: that is
+`gaps.md`. The second is where you are not looking, and it is yours alone, because nobody else
+can notice it. A failure the benchmarks never provoke is never listed, so data and train never
+get the chance to fix it. A champion that passes every gate has only been shown to be right in
+the situations the benchmarks contain. Keep `coverage.md`: the map of what the evaluation
+covers, and the list of what it does not.
+
+Three kinds of blind spot:
+
+- **Never shown.** Situations the benchmarks do not contain, or contain too rarely to count.
+  The human's examples: very long rollouts (hundreds or thousands of frames: does the picture
+  drift, do walls wear away, does material multiply or vanish?); intermittent actions (a long
+  silence and then a burst, one stroke after a long idle stretch, tools switched every frame,
+  one tool held for a whole episode); messy scenes (clutter, scribbled walls, tiny enclosures)
+  and pixel mixes (sand and water mixed cell by cell, thin interleaved layers, lattices); the
+  extremes (an empty world, a nearly full one).
+- **Never measured.** The situation is there, but no check reads the property that matters: how
+  fast things fall, the shape a pile takes, whether the picture flickers from frame to frame,
+  whether an action's effect arrives at the right moment, how sharp the picture stays.
+- **Not to be trusted.** A check with too few cases to beat its noise. A check every run passes,
+  which no longer tells runs apart: tighten it, or replace it with a harder one. A number that
+  rose on the very benchmark the runs were selected on: score the champion on a twin of that
+  benchmark with another seed and see whether the gain is still there. A gate whose value for
+  the truth itself nobody has measured.
+
+How to find them:
+
+- Walk the dimensions along which a situation can differ: how far ahead, the pattern of
+  actions, the structure and density of the scene, how materials are mixed, which events occur,
+  where in an episode the model starts. For each, ask which benchmark exercises it, and over
+  what range.
+- Measure the benchmarks, or ask data to: how long, how many strokes and how they are spaced,
+  how much of each material, how many thin structures, how often each event. Whatever the
+  simulator can do and the benchmarks hardly contain is a blind spot.
+- Think of what a person does with the play page that the scripted brush never does.
+- Ask the others. Data knows what the generators never produce; train knows where the model is
+  fragile. Their hints go on the list.
+- Every new feature of the world opens new blind spots. Look again whenever one is added.
+
+What to do with one:
+
+1. Write it in `coverage.md` as `### C-007 | title | priority | status`: what is not tested,
+   what exists that comes closest, what it would take to cover it.
+2. Cover it. Usually a small frozen probe benchmark from data (`bench-<world>-<what>-v<n>`, 64 to
+   128 episodes are enough) and one or two checks, scored into the same scorecard as the rest.
+   Sometimes only a new check on a benchmark you already have.
+3. Score the champion. What it fails becomes an ordinary entry in `gaps.md`, with its severity,
+   and data and train take it from there. What it passes is recorded in `coverage.md` as
+   covered, with the number.
+4. A new probe check starts ungated. Make it a gate once you know what the truth scores on it,
+   and that failing it is something a person watching would call wrong.
+
+Keep at it without letting it take over. With every batch of verdicts, move at least one entry
+of `coverage.md` forward. Reread the whole map when a champion is crowned and when a feature
+opens. Keep the probes small, so that scoring a run on all of them still takes minutes on the
+laptop. Coverage work runs beside everything else and does not hold up a feature, unless a probe
+shows the model plainly wrong: then it is a blocker like any other. And say in each verdict
+what it could not see.
+
 ## When no run is waiting
 
-- Look for failures that no check covers. Study the champion's pictures. Build probes for
-  behaviour that random benchmark windows rarely show: a tall column of sand falling, water
-  filling a cup, the floor erased under a pile, a wall drawn through water, a long idle scene in
-  which nothing should move.
-- Long horizons: is the imagination still sane after a hundred frames? Does material multiply?
+- Widen the evaluation: take the next entry of `coverage.md`, or find a new one (see "What the
+  evaluation does not see"). Study the champion's pictures for failures no check covers, and
+  build probes for behaviour that random benchmark windows rarely show: a tall column of sand
+  falling, water filling a cup, the floor erased under a pile, a wall drawn through water.
 - Keep `gaps.md` truthful: retest old gaps on the current champion.
 - Improve the pictures and the tools you look with.
 

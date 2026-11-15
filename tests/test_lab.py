@@ -557,3 +557,24 @@ def test_research_is_set_up_and_reachable(repo, monkeypatch, capsys):
     before = settings.stat().st_mtime_ns
     setup(repo, sync=False, bench=False, say=lambda *_: None)
     assert settings.stat().st_mtime_ns == before, "an unchanged settings file is not rewritten under a running agent"
+
+
+# --- coverage: what the evaluation does not see -----------------------------------------------------------------
+def test_coverage_list_is_read_shown_and_kept_by_eval(repo, monkeypatch, capsys):
+    listed = boards.coverage(repo.board)  # the template seeds the human's examples
+    assert [c["id"] for c in listed] == ["C-001", "C-002", "C-003", "C-004"]
+    assert listed[0] == {"id": "C-001", "title": "very long rollouts: hundreds to thousands of frames", "priority": "high",
+                         "status": "open"}
+    text = (repo.board / "coverage.md").read_text(encoding="utf-8")
+    (repo.board / "coverage.md").write_text(text.replace("frames | high | open", "frames | high | covered"), encoding="utf-8")
+    monkeypatch.chdir(repo.home)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "coverage  3 situation(s) the evaluation does not cover yet, of 4 listed; high: C-002 intermittent actions" in out
+    assert "## What the evaluation does not see" in (repo.board / "PROGRAM.md").read_text(encoding="utf-8")
+    assert "## What the evaluation does not see" in (repo.board / "roles" / "eval.md").read_text(encoding="utf-8")
+
+    def blocked(role: str) -> str | None:
+        return guard.decide(call("Edit", repo.home, file_path=str(repo.board / "coverage.md")), role, str(repo.home))
+
+    assert blocked("eval") is None and "kept by the eval agent" in blocked("train") and "kept by the eval agent" in blocked("data")

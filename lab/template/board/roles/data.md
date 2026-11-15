@@ -19,6 +19,8 @@ dataset is good if a model trained on it is wrong less often.
    something rare, coverage is the first suspect.
 2. `features.md`: when eval opens a feature, you build it into the world.
 3. Requests from the others: scene generators for probes, a new benchmark, a variant of a dataset.
+   Probe benchmarks for `coverage.md` (situations the evaluation does not test yet) are small
+   and quick to make. Make them promptly: they decide what the lab is able to see at all.
 4. Your own ideas about what data would teach the model better.
 
 ## What you can change
@@ -91,6 +93,8 @@ train and eval would have to follow, propose it to research first.
 - Measure the datasets: what they contain and what they lack. Write it in `datasets.md`.
 - Build scene generators for eval's probes.
 - Propose a mixture to train, with the reason.
+- Tell eval which situations the scene generators and the brush never produce. You know the
+  simulator best, and eval keeps the list of what is not tested in `coverage.md`.
 
 ## Not yours
 

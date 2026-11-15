@@ -32,8 +32,8 @@ reference run is `recon-k4`; its scorecard and pictures are in `{{RUNS}}\recon-k
 |---------------|------|------|-------|
 | looks after   | what the model actually does | the world and its data | the model and how it is trained |
 | code          | evaluate.py, scorecard.py, compare.py, metrics.py, viz.py | sim.py, materials.py, scenes.py, generate.py, data.py | models.py, train.py |
-| board files   | gaps.md, features.md, gates.toml, champion.txt | datasets.md | recipes.md |
-| produces      | verdicts on runs, the list of gaps, new checks, the next feature | datasets, benchmarks, scene generators | runs |
+| board files   | gaps.md, coverage.md, features.md, gates.toml, champion.txt | datasets.md | recipes.md |
+| produces      | verdicts on runs, the list of gaps, the map of what is tested, new checks, the next feature | datasets, benchmarks, scene generators | runs |
 
 Work flows in a circle: eval finds what is wrong and writes it in `gaps.md`; data and train take
 their work from there; data delivers datasets to train; train delivers runs to eval; eval judges
@@ -99,6 +99,22 @@ carefully it retests one.
   learn something. See "Seeds" under the working rules.
 - **Grow the world a little early rather than late**, as eval sees fit: a few rough edges are
   acceptable, a model that is plainly wrong is not.
+
+## What the evaluation does not see
+
+The gates speak only for the situations the benchmarks contain. A model can pass every gate and
+still be wrong where nobody has looked: a rollout of a thousand frames, a long silence followed
+by a burst of brush strokes, a cluttered scene, sand and water mixed cell by cell. A failure
+that no benchmark provokes is never listed, so nobody gets the chance to fix it.
+
+So eval keeps a second list beside `gaps.md`: `coverage.md`, the situations and measurements
+the evaluation does not cover yet. Everyone adds to it, with a message to eval: data knows what
+the scene generators and the brush never produce, train knows where the model is fragile, the
+human sees things while playing. Eval turns an entry into a small frozen probe benchmark (made
+by data) and one or two checks. What the champion fails there becomes an ordinary gap in
+`gaps.md`. "Roughly right" means roughly right where the lab has looked, so the lab keeps
+looking in new places. This runs beside the other work and does not hold up a feature, unless a
+probe shows the model plainly wrong.
 
 ## Tracks
 
@@ -237,6 +253,7 @@ blocks something you believe is right, tell the human; do not work around it.
 | `PROGRAM.md`, `roles\`, `limits.toml` | human | these instructions and the budget |
 | `ledger.jsonl` | the tooling | every cloud job and its cost |
 | `gaps.md` | eval | everything known to be wrong with the model, most important first |
+| `coverage.md` | eval | what the evaluation does not cover yet: situations, measurements, numbers not to be trusted |
 | `gates.toml` | eval | the thresholds that define "roughly right" |
 | `champion.txt` | eval | the best run so far |
 | `features.md` | eval | what the world learns next |

@@ -25,7 +25,7 @@ FILE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
 READ_ONLY_TOOLS = {"Read", "Grep", "Glob"}  # still allowed when the lab is stopped, so an agent can answer questions
 HUMAN_FILES = {"limits.toml", "ledger.jsonl", "PROGRAM.md", "STOP"}  # on the board; so is everything under roles/
-KEEPERS = {"gaps.md": "eval", "features.md": "eval", "gates.toml": "eval", "champion.txt": "eval",
+KEEPERS = {"gaps.md": "eval", "coverage.md": "eval", "features.md": "eval", "gates.toml": "eval", "champion.txt": "eval",
            "datasets.md": "data", "recipes.md": "train", "tracks.md": "research"}
 
 STOPPED = ("STOP: the human has stopped the lab. Do not retry and do not work around this. End your turn now, "
