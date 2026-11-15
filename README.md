@@ -6,7 +6,7 @@ minutes, and the same code runs on cloud GPUs through [Modal](https://modal.com)
 
 * `sandwm.generate` -- a fast batched falling-sand simulator plus a scripted random "brush" agent
   that pours sand and water, draws walls and erases things.
-* `sandwm.train` -- a LeWM-style JEPA world model: an encoder turns each frame into one embedding
+* `sandwm.train` -- a LeWM-style latent world model: an encoder turns each frame into one embedding
   vector, and a small causal transformer predicts the next embedding from the action.
 * `sandwm.evaluate` -- open-loop imagination, linear probes of physical quantities, and pictures.
 * `cloud.py` -- the same three steps on Modal GPUs, with datasets and runs kept on a Modal volume.
@@ -136,12 +136,18 @@ Balestriero, 2026, [arXiv:2603.19312](https://arxiv.org/abs/2603.19312),
 frame (RGB 64x64) --encoder--> projector (with BatchNorm) --> z_t  in R^192
 (z_{t-2}, z_{t-1}, z_t) + actions --causal transformer, AdaLN-zero--> prediction of z_{t+1}
 
-loss = MSE(prediction, z_{t+1}) + lambda * SIGReg(z)        (lambda = 0.1)
+loss = MSE(prediction, z_{t+1}) + lambda * SIGReg(z)        (lambda = 0.1)      <- LeWM
+     + recon_weight * cross-entropy(decoder(z_t), frame_t)                        <- added here, on by default
 ```
 
-Trained end to end with no stop-gradient, no EMA target network and no reconstruction loss.
-SIGReg is what prevents collapse: it pushes the embeddings of a batch towards an isotropic
+The first line is LeWM: trained end to end with no stop-gradient and no EMA target network.
+SIGReg is what prevents collapse there: it pushes the embeddings of a batch towards an isotropic
 Gaussian by testing random 1-D projections against N(0, 1).
+
+The second line is not in LeWM. It is on by default (`--recon-weight 1`) because in this world the
+first line alone learns to encode the scenery and little else -- the main finding so far, see
+[Results](#results). `--recon-weight 0` gives the pure LeWM objective, with the decoder reduced to
+a probe trained on detached embeddings; `--lambd 0` drops SIGReg instead.
 
 Two sizes are built in, and any field of `ModelConfig` can be overridden from the command line:
 
@@ -155,21 +161,25 @@ Two sizes are built in, and any field of `ModelConfig` can be overridden from th
 ```
 
 `--frame-skip k` makes one latent step span k simulator frames; the k actions are concatenated
-(the paper uses 5). The dataset stores every frame, so this is a training-time choice.
+(default 4; the paper uses 5). The dataset stores every frame, so this is a training-time choice.
+
+Two further switches exist for experiments: `--episodes-per-batch E` builds each batch from only E
+episodes, and `--model pred_residual=false` makes the predictor output the next embedding directly
+rather than the change in embedding.
 
 Differences from the paper, and why:
 
 | | LeWM | here | reason |
 | --- | --- | --- | --- |
 | image size | 224 px, patch 14 (256 tokens) | 64 px, patch 8 (64 tokens) | one pixel is one cell of the world |
-| prediction target | next embedding | **change** in embedding, zero-initialised (`--model pred_residual=false` restores LeWM) | see results |
-| learning rate | 5e-5, 100 epochs | 3e-4 to 5e-4, warm-up + cosine | shorter schedules |
+| objective | prediction + SIGReg | prediction + SIGReg + reconstruction | the pure objective takes a shortcut in this world ([Results](#results)) |
+| prediction target | next embedding | **change** in embedding, zero-initialised | starts at the copy-last baseline; matters at small budgets only ([Results](#results)) |
+| learning rate | 5e-5, 100 epochs | 5e-4 (CNN), 1e-4 (ViT), warm-up + cosine | shorter schedules |
 | mixed precision | bf16 everywhere | bf16 in the encoder trunk only | consecutive embeddings differ by a few percent, about the resolution of bf16 |
-| decoder | trained after the fact | trained alongside, on detached embeddings | one command; it still cannot influence the world model |
+| decoder | trained after the fact, for pictures only | trained alongside; part of the loss unless `--recon-weight 0` | see above |
 
-The decoder deserves a sentence: a JEPA has no way to show you a picture. The decoder here is a
-probe that maps an embedding to per-cell material logits. Its gradient is cut before the world
-model, so it only reveals what the latent state already contains.
+The decoder maps an embedding to per-cell material logits. A JEPA has no other way to show you a
+picture, so it is also what every "decoded" number and image in the evaluation goes through.
 
 ## How to read the evaluation
 
@@ -188,3 +198,92 @@ meaning:
 
 "Accuracy on changed cells" restricts the comparison to cells whose material differs from the
 last context frame, i.e. to where the dynamics actually are.
+
+`uv run python -m sandwm.compare runs/a runs/b` prints the key numbers of several evaluated runs
+side by side, at a fixed number of simulator frames ahead so that different frame skips compare.
+It also reports the **within-episode share**: the fraction of the embedding's variance that lies
+within episodes rather than between them, next to the same fraction for raw pixels. An embedding
+far below the pixel value mostly says *which episode* a frame is from, not what is happening in it.
+
+## Results
+
+Status as of 2026-11-14. Every row is a single run with a single seed, so differences of a few
+hundredths are not established. Unless stated: 10,000 training episodes (650,000 frames), small
+CNN model (`--preset cpu`), 20,000 steps at batch 128 (about 6 minutes on an A10G), evaluated on
+256 held-out windows, open-loop imagination judged 16 simulator frames ahead. "Changed cells" is
+accuracy on the ~5% of cells that differ from the last context frame, as model / frozen / ceiling.
+
+### 1. The pure LeWM objective encodes the scenery, not the dynamics
+
+| encoder (`--recon-weight 0`) | frame skip | within-episode share | decode mIoU ceiling | changed cells | probe R^2 amount / position |
+| --- | --- | --- | --- | --- | --- |
+| CNN | 1 | 0.07 | 0.64 | 0.43 / 0.35 / 0.55 | 0.63 / 0.40 |
+| CNN | 2 | 0.03 | 0.58 | 0.43 / 0.39 / 0.49 | 0.55 / 0.28 |
+| CNN | 4 | 0.01 | 0.49 | 0.46 / 0.45 / 0.48 | 0.45 / 0.19 |
+| ViT (`--preset lewm`), lr 3e-4 | 2 | 0.17 | 0.49 | 0.40 / 0.38 / 0.45 | 0.84 / 0.10 |
+| ViT, lr 1e-4 | 2 | 0.15 | 0.51 | 0.42 / 0.36 / 0.45 | 0.88 / 0.21 |
+| ViT, lr 3e-4, predictor as in the paper | 2 | 0.14 | 0.49 | 0.40 / 0.36 / 0.41 | 0.83 / 0.06 |
+
+For raw pixels the within-episode share is 0.29. The embeddings stay high-rank and SIGReg is
+satisfied, but the share falls throughout training (0.15 at step 2,000, 0.07 at 20,000), the
+frozen-latent error shrinks 4-10x, and at frame skip 4 the decode ceiling itself gets worse with
+training (0.55 to 0.48). The likely reason: every episode has its own random terrain. Which scene
+a frame belongs to differs across a batch, so it can satisfy SIGReg, and is constant in time, so
+it costs nothing to predict. LeWM's own benchmarks have one fixed background and do not offer
+this shortcut.
+
+### 2. A reconstruction term fixes it
+
+| variant (CNN, frame skip 1) | within-episode share | decode mIoU ceiling | changed cells | probe R^2 amount / position |
+| --- | --- | --- | --- | --- |
+| pure objective | 0.07 | 0.64 | 0.43 / 0.35 / 0.55 | 0.63 / 0.40 |
+| batches built from 8 episodes (`--episodes-per-batch 8`) | 0.81 | 0.44 | 0.46 / 0.26 / 0.52 | 0.24 / 0.22 |
+| batches built from 32 episodes | 0.66 | 0.55 | 0.42 / 0.20 / 0.62 | 0.40 / 0.31 |
+| reconstruction, weight 0.1 | 0.15 | 0.77 | 0.52 / 0.24 / 0.72 | 0.86 / 0.68 |
+| **reconstruction, weight 1** | 0.21 | 0.81 | 0.54 / 0.16 / 0.80 | 0.91 / 0.72 |
+| reconstruction + 8 episodes per batch | 0.75 | 0.74 | 0.49 / 0.18 / 0.74 | 0.78 / 0.64 |
+| reconstruction, SIGReg off (`--lambd 0`) | 0.20 | 0.84 | 0.56 / 0.14 / 0.82 | 0.92 / 0.73 |
+
+Grouped batches do force the dynamics in, but at the cost of the static layout. With the
+reconstruction term, SIGReg no longer contributes anything measurable.
+
+### 3. With reconstruction: frame skip, encoder, width
+
+| variant (`--recon-weight 1`) | decode mIoU ceiling | changed cells | imagined mIoU vs. repeating the last true frame | train time |
+| --- | --- | --- | --- | --- |
+| CNN, frame skip 1 | 0.81 | 0.54 / 0.16 / 0.80 | 0.75 vs 0.78 | 6 min |
+| CNN, frame skip 2 | 0.81 | 0.59 / 0.17 / 0.78 | 0.76 vs 0.77 | 6 min |
+| **CNN, frame skip 4 (the default)** | 0.80 | 0.66 / 0.20 / 0.78 | 0.75 vs 0.71 | 6 min |
+| CNN, frame skip 1, 512-d embedding | 0.81 | 0.57 / 0.17 / 0.80 | 0.75 vs 0.78 | 7 min |
+| ViT (`--preset lewm`), frame skip 1, lr 1e-4 | 0.74 | 0.55 / 0.23 / 0.70 | 0.70 vs 0.78 | 32 min |
+
+At frame skip 4 the imagination stays ahead of "nothing changes" as the horizon grows: mIoU
+0.72 vs 0.64 at 32 frames and 0.68 vs 0.58 at 56 frames. The paper-sized ViT did not beat the
+small CNN here, with or without reconstruction, and a wider embedding did not raise the ceiling.
+
+The residual predictor matters only for short runs: after 1,000 CPU steps it was at 0.96x the
+copy-last error where the paper's direct form was at 2.45x, but after 20,000 steps the two were
+indistinguishable.
+
+### 4. On the laptop
+
+2,000 training episodes (130,000 frames), 3,000 steps at batch 64, `--recon-weight 1
+--frame-skip 1`: 29 minutes on an i7-1265U with the CPU shared (about 20 when idle). Decode mIoU
+ceiling 0.72, changed cells 0.46 / 0.23 / 0.70, probes 0.60-0.94. The current defaults (frame
+skip 4) have been verified in the cloud but not yet run to completion on the laptop.
+
+### 5. Known limits
+
+* One vector per frame caps what can be shown at a decode mIoU of about 0.8: thin walls, single
+  grains and falling streams are blurred or lost, and a wider vector did not help.
+* The predictor is deterministic, so where the physics is random (water surfaces, sinking sand)
+  it predicts an average, and imagined frames lose detail as they roll forward.
+* Trained only on the scripted random brush; no agent, no task, 64x64, four materials.
+* The decoder is small (0.35M parameters) and every decoded number goes through it.
+
+## Not started
+
+Ideas, none of them begun: a grid of latent vectors with a local predictor instead of one vector;
+a pixel-space local baseline (a small convolutional net predicting the next frame) as a yardstick;
+a stochastic predictor; planning towards a goal frame in latent space; reactions (fire, wood,
+acid), larger grids and an embodied agent.

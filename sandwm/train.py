@@ -1,6 +1,10 @@
-"""Train the JEPA world model.
+"""Train the world model.
 
     uv run python -m sandwm.train --data data/basic64 --out runs/lewm
+
+The defaults train the LeWM objective (latent prediction + SIGReg) plus a reconstruction term
+(--recon-weight 1), with one latent step spanning 4 simulator frames.  `--recon-weight 0` is the
+pure LeWM objective; `--lambd 0` drops SIGReg.
 
 Writes to the run directory: ckpt.pt (model + decoder + config), metrics.jsonl, curves.png.
 Ctrl+C stops early and still saves a checkpoint.
@@ -101,7 +105,7 @@ def main(argv=None) -> None:
     p.add_argument("--warmup", type=int, default=100)
     p.add_argument("--lambd", type=float, default=0.1, help="weight of the SIGReg term")
     p.add_argument("--num-proj", type=int, default=1024, help="random projections in SIGReg")
-    p.add_argument("--frame-skip", type=int, default=1, help="raw frames per latent step; their actions are concatenated")
+    p.add_argument("--frame-skip", type=int, default=4, help="raw frames per latent step; their actions are concatenated")
     p.add_argument("--preset", choices=sorted(PRESETS), default="cpu",
                    help="architecture size: 'cpu' = small CNN encoder, 'lewm' = ViT-Tiny + 6-layer predictor as in the paper")
     p.add_argument("--model", nargs="*", default=[], metavar="KEY=VALUE",
@@ -109,8 +113,9 @@ def main(argv=None) -> None:
     p.add_argument("--no-amp", action="store_true", help="disable bfloat16 mixed precision on GPU")
     p.add_argument("--episodes-per-batch", type=int, default=0,
                    help="build each batch from this many episodes (0 = one episode per window); see EpisodeDataset.sample")
-    p.add_argument("--recon-weight", type=float, default=0.0,
-                   help="let this fraction of the decoder's gradient into the encoder (0 = pure JEPA, decoder is only a probe)")
+    p.add_argument("--recon-weight", type=float, default=1.0,
+                   help="fraction of the decoder's gradient that reaches the encoder.  0 = the pure LeWM objective with the "
+                        "decoder as a mere probe; in this world that encodes the scenery and little else (see README)")
     p.add_argument("--decoder-batch", type=int, default=64, help="frames per step used to train the probe decoder")
     p.add_argument("--max-episodes", type=int, default=None, help="use only the first N training episodes")
     p.add_argument("--eval-every", type=int, default=250)
@@ -190,8 +195,8 @@ def main(argv=None) -> None:
             obs, act = train.observe(frames, device), train.encode_actions(actions, device)
             loss, out = jepa_loss(model, sigreg, obs, act, args.lambd)
 
-            # Probe decoder.  With --recon-weight 0 it sees detached embeddings, so its gradient never
-            # reaches the world model; otherwise that fraction of its gradient flows into the encoder.
+            # Decoder.  With --recon-weight 0 it sees detached embeddings and is a pure probe: its gradient
+            # never reaches the world model.  Otherwise that fraction of its gradient flows into the encoder.
             pick = torch.randperm(args.batch * n_frames, device=device)[: args.decoder_batch]
             target = torch.from_numpy(frames).to(device).flatten(0, 1)[pick].long()
             emb = out["emb"]

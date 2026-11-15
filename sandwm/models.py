@@ -6,10 +6,13 @@ Re-implementation of the ideas in LeWorldModel (Maes et al., 2026; github.com/lu
 * an autoregressive causal transformer predicts the next embedding from a short history, with
   the action injected through AdaLN-zero (so the predictor starts out as the identity);
 * the loss is  MSE(predicted next embedding, actual next embedding) + lambda * SIGReg(embeddings),
-  trained end-to-end: no stop-gradient, no EMA target network, no reconstruction term.
+  trained end-to-end: no stop-gradient, no EMA target network.
 
-The pixel decoder defined here is NOT part of the world model: it is trained on detached
-embeddings, purely so that we can look at what the latent state contains.
+LeWM stops there.  In a world whose scenery differs from episode to episode that objective is
+satisfied by encoding the scenery alone (see the README), so the trainer can additionally let the
+gradient of the decoder defined here flow into the encoder (`--recon-weight`, on by default).
+With `--recon-weight 0` the decoder is a pure probe, trained on detached embeddings so that we
+can look at what the latent state contains without influencing it.
 """
 
 from __future__ import annotations
@@ -303,9 +306,13 @@ def jepa_loss(model: JEPA, sigreg: SIGReg, obs: torch.Tensor, actions: torch.Ten
     return pred_loss + lambd * sig_loss, {"pred": pred_loss.detach(), "sigreg": sig_loss.detach(), "emb": emb, "pred_emb": pred}
 
 
-# --- visualisation-only decoder -----------------------------------------------------------------
+# --- decoder ------------------------------------------------------------------------------------
 class Decoder(nn.Module):
-    """Embedding -> per-cell material logits (B, K, H, W).  A probe, not part of the world model."""
+    """Embedding -> per-cell material logits (B, K, H, W).
+
+    Used to look at latent states, and -- unless the trainer is run with `--recon-weight 0` -- as
+    the reconstruction term that keeps the embedding informative about the frame.
+    """
 
     def __init__(self, cfg: ModelConfig) -> None:
         super().__init__()
