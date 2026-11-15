@@ -9,9 +9,11 @@ def test_cloud_app_is_well_formed():
     import cloud
 
     assert cloud.app.name == "sandwm"
-    for name in ("generate", "train", "evaluate", "sweep", "reevaluate"):
+    for name in ("generate", "train", "sweep", "reevaluate", "generate_job", "train_job", "evaluate_job"):
         assert hasattr(cloud, name), f"cloud.py lost its {name!r} entry point"
     assert isinstance(cloud.GPU, list) and cloud.GPU
+    assert cloud.lab_jobs() is not None, "the lab's bookkeeping must be importable on this machine"
+    assert 0 < cloud.RUN_SECONDS <= 8 * 3600 and cloud.MAX_GPUS >= 1
 
 
 def test_log_lines_are_tagged_with_the_run_name(capsys):
@@ -22,3 +24,64 @@ def test_log_lines_are_tagged_with_the_run_name(capsys):
         print("two\nthree", end="")
         print(" four")
     assert capsys.readouterr().out == "[run-a] one\n[run-a] two\n[run-a] three four\n"
+
+
+class FakeJob:
+    """Stands in for a Modal function: `starmap` hands back prepared results instead of running anything."""
+
+    def __init__(self, results):
+        self.results, self.calls = results, None
+
+    def starmap(self, calls, return_exceptions=False):
+        self.calls = list(calls)
+        yield from self.results
+
+
+def test_launch_books_and_settles_every_job(monkeypatch, capsys):
+    import cloud
+
+    class Booking:
+        minutes, settled, closed = 5.0, [], False
+
+        def done(self, name, result):
+            self.settled.append((name, result))
+
+        def close(self):
+            Booking.closed = True
+
+    class Jobs:
+        Refused = RuntimeError
+        asked = None
+
+        @staticmethod
+        def book(record, kind, minutes):
+            Jobs.asked = (record, kind, minutes)
+            return Booking()
+
+    summary = {"steps": 10, "gpu": "A10G", "gpu min": 1.2}
+    monkeypatch.setattr(cloud, "lab_jobs", lambda: Jobs)
+    job = FakeJob([summary, ValueError("boom")])
+    with pytest.raises(SystemExit):  # one of the two failed
+        cloud.launch(job, ["a", "b"], [("a",), ("b",)], "train", 5.0, [{"run": "a"}, {"run": "b"}])
+    assert Jobs.asked == ([{"run": "a"}, {"run": "b"}], "train", 5.0) and job.calls == [("a",), ("b",)]
+    assert [name for name, _ in Booking.settled] == ["a", "b"] and Booking.closed
+    out = capsys.readouterr().out
+    assert "5 GPU min booked for each" in out and "b FAILED" in out and "A10G" in out
+
+
+def test_launch_does_not_start_what_the_budget_refuses(monkeypatch):
+    import cloud
+
+    class Jobs:
+        class Refused(Exception):
+            pass
+
+        @staticmethod
+        def book(record, kind, minutes):
+            raise Jobs.Refused("GPU budget: nothing left")
+
+    monkeypatch.setattr(cloud, "lab_jobs", lambda: Jobs)
+    job = FakeJob([])
+    with pytest.raises(SystemExit, match="not started: GPU budget"):
+        cloud.launch(job, ["a"], [("a",)], "train", 0.0, [{"run": "a"}])
+    assert job.calls is None, "nothing may reach the cloud after a refusal"

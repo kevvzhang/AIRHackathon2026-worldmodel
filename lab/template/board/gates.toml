@@ -1,0 +1,22 @@
+# What "roughly right" means, in numbers.  Kept by the eval agent.
+#
+# A gate is a threshold on one scorecard check (sandwm/scorecard.py).  The check's own direction
+# says which side passes: at least the threshold for higher-is-better checks, at most for
+# lower-is-better ones.  The world counts as roughly right when the champion passes every gate
+# and no blocker is open in gaps.md.
+#
+# These first values were set by the human's setup session from the scorecard of recon-k4 and are
+# provisional: a gate should fail only for something a person watching the rollout would call
+# wrong.  Change one when that is not so, and write down why in gaps.md.
+
+[gates]
+"fidelity/miou" = 0.85            # recon-k4: 0.788  a frame survives encoding and decoding
+"fidelity/walls" = 0.90           # recon-k4: 0.670  ... and so do its walls
+"walls/kept@48" = 0.90            # recon-k4: 0.654  walls stay where they are in imagination
+"walls/invented@48" = 0.10        # recon-k4: 0.228  and none appear from nowhere
+"rollout/miou@48" = 0.75          # recon-k4: 0.704  imagination 48 frames ahead matches the truth
+"rollout/beats_copy@16" = 0.03    # recon-k4: 0.002  ... and is better than repeating the last frame
+"dynamics/changed@16" = 0.70      # recon-k4: 0.593  the cells that change, change correctly
+"actions/gain@16" = 0.10          # recon-k4: 0.144  the brush matters to the imagination (passes: keep it so)
+"mass/sand@48" = 0.10             # recon-k4: 0.132  sand is neither created nor lost
+"mass/water@48" = 0.10            # recon-k4: 0.134  nor is water

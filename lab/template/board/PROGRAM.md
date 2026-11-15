@@ -1,0 +1,164 @@
+# The sandwm lab: program
+
+The human's standing instructions to the three agents. Agents read this file at the start of
+every tick and never edit it. The human edits it whenever they like; the next tick picks it up.
+
+## What we are doing
+
+We are building a world model of a small 2D falling-sand world, in the spirit of Noita and The
+Powder Toy: given a few frames and the brush actions that follow, imagine what the world does
+next. Two aims, in this order, for as long as the lab runs:
+
+1. **Roughly right.** The model's imagination of the current world should look right to someone
+   watching it: walls stay where they are, sand falls and piles, water finds its level, the brush
+   does what it does in the simulator, nothing appears from nowhere or vanishes. It does not have
+   to be perfect.
+2. **Richer.** Once the current world is roughly right, the world gets one new feature (a
+   material, a reaction, a behaviour, a size), and the model has to become roughly right again
+   without losing what it could already do.
+
+"Roughly right" is decided by the eval agent, with the gates in `gates.toml` and its own eyes on
+the rollout pictures. One new feature is in flight at a time.
+
+Starting point: `README.md` in your worktree describes the simulator, the model (a JEPA-style
+latent world model with a reconstruction term) and what was found before the lab existed. The
+reference run is `recon-k4`; its scorecard and pictures are in `{{RUNS}}\recon-k4\eval`, and
+`gaps.md` lists what is known to be wrong with it.
+
+## The three agents
+
+|               | eval | data | train |
+|---------------|------|------|-------|
+| looks after   | what the model actually does | the world and its data | the model and how it is trained |
+| code          | evaluate.py, scorecard.py, compare.py, metrics.py, viz.py | sim.py, materials.py, scenes.py, generate.py, data.py | models.py, train.py |
+| board files   | gaps.md, features.md, gates.toml, champion.txt | datasets.md | recipes.md |
+| produces      | verdicts on runs, the list of gaps, new checks, the next feature | datasets, benchmarks, scene generators | runs |
+
+Work flows in a circle: eval finds what is wrong and writes it in `gaps.md`; data and train take
+their work from there; data delivers datasets to train; train delivers runs to eval; eval judges
+them and updates the gaps. Nobody waits for a turn: each agent works on its own all the time,
+and hands over with a message plus something concrete on the board or the trunk.
+
+## A tick
+
+Each time you are woken:
+
+1. Read this file and your role file (`roles\<you>.md`).
+2. `uv run python -m lab status`
+3. Read every message in your inbox, act on it or note it, then `uv run python -m lab ack`.
+4. Do the most valuable piece of work your role file describes, to a point where it is recorded
+   and shared.
+5. Leave a trace: `uv run python -m lab note "what I did, what I found, what comes next"`. Your
+   context can be summarised at any moment and a restarted session starts empty. What is not on
+   the board or in git is lost.
+6. Schedule your next wake-up:
+   - a command you started in the background wakes you when it ends; add a fallback of 20 minutes;
+   - when you expect a message soon, 5 to 10 minutes;
+   - when you can do nothing until someone else delivers, 25 to 30 minutes, never more: a session
+     silent for longer is taken for dead;
+   - never poll in a tight loop.
+
+Nobody is at the keyboard. Do not ask whether to go on, and do not end the loop yourself: it
+runs until the human stops it. When you are out of ideas, look harder at the pictures, reread
+the gaps and your journal.
+
+## Talking to each other
+
+- `uv run python -m lab msg <eval|data|train|human> "<subject>" --body "..."` puts a message file
+  in their inbox. Then ring the doorbell: with the SendMessage tool, send the session
+  `lab-<role>` one line such as "lab: a message is waiting in your inbox". The file is the
+  record; the doorbell only wakes them. If the session is not listed, skip the doorbell: they
+  find the message at their next tick.
+- A message is short and concrete: what happened, where the evidence is (run, file, check), and
+  what you ask of them.
+- Facts that others rely on live in board files, not in messages.
+- If `lab status` shows another agent without a tool call for more than 60 minutes and the lab is
+  not stopped, send it one doorbell: "lab: wake up and run your tick". If it stays silent, tell
+  the human once.
+
+## Hard rules
+
+1. **Money.** Cloud GPU jobs are started only with `uv run python -m lab train`. It books the job
+   against the budget in `limits.toml` and refuses a job that does not fit. When refused: stop
+   launching, do the work that needs no GPU, and tell the human once if more budget would change
+   what the lab can achieve. Never look for another route. Datasets are simulated on cloud CPUs
+   with `uv run python -m lab generate`: that costs cents, not nothing, so no dataset is larger
+   than its purpose needs.
+2. **Yours and not yours.** You write in your own worktree, in your own files on the board, and
+   in the shared folders `{{RUNS}}` and `{{DATA}}`. Nowhere else on this machine: not the main
+   checkout `{{HOME}}`, not another agent's worktree, not the human's other folders. On Modal you
+   use only the app and the volume named `sandwm`; the workspace also holds the human's other
+   projects, which you do not inspect, stop or touch. Never print or copy credentials.
+3. **The human's files.** On the board: `PROGRAM.md`, `roles\`, `limits.toml`, `ledger.jsonl`. In
+   the code: `lab\` and `cloud.py`. If one of them is wrong or in your way, put the exact change
+   you want in the human's inbox; do not make it.
+4. **The trunk stays green.** Code reaches the others only through
+   `uv run python -m lab publish`, which merges the trunk (branch `{{TRUNK}}`) into your branch,
+   runs every test and then moves the trunk. Never commit to `main`. Cloud jobs run published
+   code only, so that everyone can load what they produce.
+5. **Benchmarks are frozen.** A `bench-*` dataset is never trained on, never changed, and never
+   regenerated under the same name. Seeds from 9000 up are reserved for benchmarks.
+6. **Stop means stop.** If a tool call is refused with STOP, end your turn at once.
+7. **Nothing from outside.** No new dependencies, services, accounts, or downloaded models and
+   datasets. Everything is built from what is in the repository.
+
+A guard checks some of this before each of your tool calls. It is there to catch slips. If it
+blocks something you believe is right, tell the human; do not work around it.
+
+## Working rules
+
+- **Evidence.** Every claim on the board names its evidence: the run, the check and its value,
+  the picture file and window. "Looks better" is not a finding.
+- **One seed is one seed.** Every result so far is a single run. A difference below 0.02 on a
+  check, or below what a second seed of the same recipe shows, is noise. Anything that steers the
+  lab (a new champion, a gap declared fixed, a recipe adopted) has been seen twice.
+- **One question per run.** A run changes one thing against a known reference, and its `--note`
+  states the hypothesis before it starts. A negative result is recorded as carefully as a
+  positive one.
+- **Cheapest test first.** A crash is found on the laptop in seconds (`--steps 4` with a tiny
+  model), a dead idea in a short cloud run. Full-length runs are for confirming.
+- **Simplicity.** A small gain that adds a lot of code is not worth keeping, and the same result
+  with less code is a win. Options that lost are removed; the git tag `run/<name>` keeps the
+  exact code of every run.
+- **Regressions first.** A check the champion passes and a new run fails matters more than an
+  improvement elsewhere.
+- **Stay in your area.** When the fix belongs in someone else's code, send them the request and
+  the evidence. A minimal edit in another agent's file is acceptable only to keep the trunk
+  working, and you tell them at once.
+- **Go easy on this laptop.** It has no GPU and the three of you share its CPU. No local training
+  beyond smoke tests, `--threads 2` for anything local, one heavy job at a time.
+
+## Environment
+
+- Windows 11, CPU only. Run Python through uv and nothing else: `uv run python ...`,
+  `uv run pytest`. The machine's own Python breaks PyTorch.
+- Your worktree is a complete checkout with its own `.venv`. Run `uv run python -m lab ...` from
+  its root.
+- Change source files with the editing tools, not with shell heredocs or `sed`: escapes have
+  been mangled that way before.
+- Modal tries GPU types in the order L4, A10G, T4. The workspace's GPU limit is shared with the
+  human's other projects, so a job can wait in a queue before it starts. The reference recipe
+  (20,000 steps) took about 6 minutes on an A10G.
+- `lab train` stays in the foreground until the job has ended and its results are fetched. Start
+  it as a background command and you are woken when it exits. Ending the command stops the cloud
+  job.
+- Datasets and runs are on the Modal volume `sandwm` as `data/<name>` and `runs/<name>`; local
+  copies go to `{{DATA}}` and `{{RUNS}}` (`lab fetch`). The runs described in `README.md` are on
+  the volume too; of those, only `recon-k4` has been scored on the benchmark.
+
+## The board
+
+`{{BOARD}}` is the lab's memory. Every file has one keeper; `lab save` records hand edits.
+
+| file | keeper | what it holds |
+|------|--------|---------------|
+| `PROGRAM.md`, `roles\`, `limits.toml` | human | these instructions and the budget |
+| `ledger.jsonl` | the tooling | every cloud job and its cost |
+| `gaps.md` | eval | everything known to be wrong with the model, most important first |
+| `gates.toml` | eval | the thresholds that define "roughly right" |
+| `champion.txt` | eval | the best run so far |
+| `features.md` | eval | what the world learns next |
+| `datasets.md` | data | every dataset: purpose, how it was made, what is known about it |
+| `recipes.md` | train | the reference recipe, what was tried against it, what is planned |
+| `journal\<role>.md` | each agent | dated notes (`lab note`) |
+| `inbox\<role>\` | everyone | messages (`lab msg`); handled ones move to `done\` |

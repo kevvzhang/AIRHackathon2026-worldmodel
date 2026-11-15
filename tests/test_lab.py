@@ -1,0 +1,400 @@
+"""The agent lab's tooling: budget, board, guard, sharing code.  Nothing here starts an agent or a cloud job."""
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from lab import board as boards
+from lab import cli, guard, jobs, scores
+from lab.budget import Ledger, Limits, Refused
+from lab.paths import TRUNK, Lab, LabError, git, locked
+from lab.setup import agent_settings, setup
+
+LIMITS = "gpu_minutes_total = 60\ngpu_minutes_per_run = 20\nmax_concurrent_gpu_runs = 2\n"
+
+
+@pytest.fixture
+def board(tmp_path):
+    (tmp_path / "board").mkdir()
+    (tmp_path / "board" / "limits.toml").write_text(LIMITS)
+    return tmp_path / "board"
+
+
+# --- budget ---------------------------------------------------------------------------------------------
+def test_limits_are_read_and_a_broken_file_refuses_everything(board):
+    assert Ledger(board).limits == Limits(60.0, 20.0, 2, 20.0)
+    (board / "limits.toml").write_text("gpu_minutes_total = 'lots'\n")
+    with pytest.raises(Refused, match="no cloud job may start"):
+        Ledger(board).reserve([{"run": "abc"}])
+    (board / "limits.toml").unlink()
+    with pytest.raises(Refused):
+        Ledger(board).reserve([{"run": "abc"}])
+
+
+def test_a_job_is_charged_its_allowance_until_it_reports_back(board):
+    ledger = Ledger(board)
+    (job,) = ledger.reserve([{"run": "r0001", "by": "train", "note": "baseline"}])
+    assert ledger.spent() == 20 and [j["run"] for j in ledger.running()] == ["r0001"]
+    ledger.settle(job, 6.25, "ok", gpu="A10G")
+    assert ledger.spent() == 6.25 and ledger.running() == []
+    record = ledger.jobs()[0]
+    assert record["note"] == "baseline" and record["end"]["gpu"] == "A10G" and record["kind"] == "train"
+    assert ledger.summary()["by"] == {"train": 6.25}
+
+
+def test_the_budget_refuses_what_does_not_fit(board):
+    ledger = Ledger(board)
+    a, b = ledger.reserve([{"run": "a01"}, {"run": "b01"}])
+    with pytest.raises(Refused, match="at most 2 may run at once"):
+        ledger.reserve([{"run": "c01"}])
+    ledger.settle(a, 20, "ok")
+    ledger.settle(b, 20, "failed")
+    assert ledger.spent() == 40
+    with pytest.raises(Refused, match="GPU budget"):  # 40 spent + 2 x 20 > 60
+        ledger.reserve([{"run": "c01"}, {"run": "d01"}])
+    with pytest.raises(Refused, match="more than the 20"):
+        ledger.reserve([{"run": "c01"}], minutes=30)
+    (c,) = ledger.reserve([{"run": "c01"}], minutes=15)  # 55: fits
+    with pytest.raises(Refused, match="GPU budget"):
+        ledger.reserve([{"run": "e01"}], minutes=10)
+    ledger.settle(c, 3, "ok")
+    assert ledger.spent() == 43
+    assert len(ledger.events()) == 6  # nothing that was refused left a line
+
+
+def test_run_names_are_used_once_but_a_run_can_be_evaluated_again(board):
+    ledger = Ledger(board)
+    (job,) = ledger.reserve([{"run": "r0001"}], minutes=5)
+    ledger.settle(job, 1, "ok")
+    with pytest.raises(Refused, match="already used"):
+        ledger.reserve([{"run": "r0001"}], minutes=5)
+    with pytest.raises(Refused, match="must differ"):
+        ledger.reserve([{"run": "x01"}, {"run": "x01"}], minutes=5)
+    (again,) = ledger.reserve([{"run": "r0001"}], kind="evaluate", minutes=5)
+    assert again == "r0001#2"
+
+
+def test_nothing_starts_while_the_lab_is_stopped(board):
+    (board / "STOP").write_text("stop")
+    with pytest.raises(Refused, match="stopped the lab"):
+        Ledger(board).reserve([{"run": "r0001"}])
+
+
+def test_lock_is_exclusive_and_stale_locks_are_taken_over(tmp_path):
+    path = tmp_path / "x.lock"
+    with locked(path):
+        with pytest.raises(LabError):
+            with locked(path, wait=0.3):
+                pass
+    assert not path.exists()
+    path.write_text("left behind by a dead process")
+    with locked(path, wait=0.3, stale=0.0):
+        pass
+
+
+# --- board ------------------------------------------------------------------------------------------------
+def test_messages_arrive_in_the_inbox_and_move_to_done(board):
+    first = boards.send(board, "train", "eval", "Run r0007 is ready!", "It fixes G-001.\n")
+    second = boards.send(board, "train", "eval", "Run r0007 is ready!")
+    assert first != second and first.parent == board / "inbox" / "eval"
+    assert "from: train" in first.read_text() and "It fixes G-001." in first.read_text()
+    assert [boards.subject(p) for p in boards.unread(board, "eval")] == ["Run r0007 is ready!"] * 2
+    assert boards.unread(board, "data") == []
+    moved = boards.acknowledge(board, "eval", [first.name])
+    assert [p.name for p in moved] == [first.name] and boards.unread(board, "eval") == [second]
+    assert len(boards.acknowledge(board, "eval")) == 1 and boards.unread(board, "eval") == []
+
+
+def test_journal_gaps_and_champion(board):
+    boards.note(board, "data", "generated   thinwalls-v1\n and told train")
+    boards.note(board, "data", "second note")
+    assert boards.last_note(board, "data").endswith("second note") and boards.last_note(board, "eval") == ""
+    assert "generated thinwalls-v1 and told train" in (board / "journal" / "data.md").read_text()
+    (board / "gaps.md").write_text("# Gaps\n### G-001 | walls are lost | blocker | open\n- what\n"
+                                   "### G-002 | sand multiplies | major | fixed\n### not a gap\n")
+    assert boards.gaps(board) == [{"id": "G-001", "title": "walls are lost", "severity": "blocker", "status": "open"},
+                                  {"id": "G-002", "title": "sand multiplies", "severity": "major", "status": "fixed"}]
+    assert boards.champion(board) == ""
+    (board / "champion.txt").write_text("r0007\n\nwhy: passes two more gates\n")
+    assert boards.champion(board) == "r0007"
+
+
+def test_gates_are_read_against_a_fetched_scorecard(board, tmp_path):
+    run = tmp_path / "runs" / "r1"
+    (run / "eval").mkdir(parents=True)
+    (run / "eval" / "scorecard.json").write_text(json.dumps({"checks": {
+        "walls/kept@48": {"value": 0.95, "better": "higher"}, "mass/sand@48": {"value": 0.3, "better": "lower"},
+        "broken": {"value": None, "better": "higher"}}}))
+    (board / "gates.toml").write_text('[gates]\n"walls/kept@48" = 0.9\n"mass/sand@48" = 0.1\n"broken" = 0.5\n"absent" = 1\n')
+    card = scores.card(run)
+    assert scores.failing(card, scores.gates(board)) == ["mass/sand@48", "broken", "absent"]
+    assert scores.gate_line(run, board) == "gates 1/4"
+    assert scores.gate_line(tmp_path / "nowhere", board) == "" and scores.card(tmp_path / "nowhere") is None
+
+
+# --- guard --------------------------------------------------------------------------------------------------
+def call(tool: str, home: Path, **tool_input) -> dict:
+    return {"tool_name": tool, "tool_input": tool_input, "cwd": str(home / ".lab" / "train")}
+
+
+def test_guard_fences_files(tmp_path):
+    home = tmp_path
+    lab = home / ".lab"
+
+    def blocked(path) -> str | None:
+        return guard.decide(call("Edit", home, file_path=str(path)), "train", str(home))
+
+    assert blocked(lab / "train" / "sandwm" / "models.py") is None
+    assert blocked("sandwm/models.py") is None  # relative to the agent's own worktree
+    assert blocked(lab / "runs" / "r1" / "notes.md") is None
+    assert blocked(lab / "datasets" / "probe-v1" / "notes.md") is None
+    assert blocked(lab / "board" / "recipes.md") is None
+    assert blocked(lab / "board" / "journal" / "train.md") is None
+    assert blocked(tmp_path.parent / "scratch.txt") is None  # outside the repository: not the guard's business
+    assert "human's" in blocked(lab / "board" / "limits.toml")
+    assert "human's" in blocked(lab / "board" / "PROGRAM.md")
+    assert "human's" in blocked(lab / "board" / "roles" / "train.md")
+    assert "kept by the eval agent" in blocked(lab / "board" / "gaps.md")
+    assert "another agent's journal" in blocked(lab / "board" / "journal" / "eval.md")
+    assert "data agent's worktree" in blocked(lab / "data" / "sandwm" / "sim.py")
+    assert "eval agent's worktree" in blocked(lab / "eval" / "sandwm" / "scorecard.py")
+    assert "main checkout" in blocked(home / "sandwm" / "models.py")
+    assert "settings" in blocked(lab / "train" / ".claude" / "settings.local.json")
+    assert guard.decide(call("Write", home, file_path=str(lab / "board" / "gaps.md")), "eval", str(home)) is None
+    assert guard.decide(call("Read", home, file_path=str(lab / "board" / "limits.toml")), "train", str(home)) is None
+
+
+def test_guard_trips_on_commands_that_leave_the_lab(tmp_path):
+    def blocked(command: str, tool: str = "Bash") -> str | None:
+        return guard.decide(call(tool, tmp_path, command=command), "train", str(tmp_path))
+
+    for fine in ("uv run python -m lab train r0001 --data basic64-10k -- --steps 100", "uv run pytest -q", "git status",
+                 "git add sandwm/models.py && git commit -m 'spatial latent'", "git branch --show-current", "git branch -a",
+                 "uv run modal app list", "uv run modal volume ls sandwm runs", "uv run python -m lab budget",
+                 "git checkout lab -- sandwm/train.py", "git log main..lab --oneline"):
+        assert blocked(fine) is None, fine
+    assert "lab train" in blocked("uv run modal run cloud.py::train --name x")
+    assert "lab train" in blocked("uv run modal run --detach cloud.py::sweep --spec 'a: '", "PowerShell")
+    assert "limits and ledger" in blocked("sed -i 's/300/9000/' ../board/limits.toml")
+    assert "limits and ledger" in blocked("Add-Content ..\\board\\ledger.jsonl '{}'", "PowerShell")
+    assert "off limits" in blocked("cat ~/.modal.toml")
+    assert "off limits" in blocked("uv run modal token new")
+    assert "other Modal projects" in blocked("uv run modal app logs pwa-wsp-probe")
+    assert "never deleted" in blocked("uv run modal volume rm -r sandwm runs/r0001")
+    assert "pushes nowhere" in blocked("git push origin lab")
+    assert "managed by" in blocked("git branch -D lab-eval")
+    assert "managed by" in blocked("git update-ref refs/heads/lab HEAD")
+    assert "own branch" in blocked("git checkout main")
+    assert "own branch" in blocked("git switch lab && git merge lab-train")
+
+
+def test_guard_stop_switch_blocks_everything_but_reading(tmp_path):
+    (tmp_path / ".lab" / "board").mkdir(parents=True)
+    (tmp_path / ".lab" / "board" / "STOP").write_text("stop")
+    assert guard.decide(call("Bash", tmp_path, command="git status"), "eval", str(tmp_path)).startswith("STOP")
+    assert guard.decide(call("ScheduleWakeup", tmp_path, delaySeconds=600), "eval", str(tmp_path)).startswith("STOP")
+    assert guard.decide(call("Read", tmp_path, file_path="x"), "eval", str(tmp_path)) is None
+
+
+def test_guard_as_claude_code_runs_it(tmp_path):
+    """The hook is a script fed one JSON event on stdin: exit 2 and a reason on stderr block the call."""
+    script = Path(guard.__file__)
+
+    def run(event: dict) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(script), "--role", "data", "--home", str(tmp_path)],
+                              input=json.dumps(event).encode(), capture_output=True)
+
+    ok = run(call("Bash", tmp_path, command="uv run pytest"))
+    assert ok.returncode == 0 and ok.stderr == b""
+    seen = json.loads((tmp_path / ".lab" / "board" / "status" / "data.json").read_text())
+    assert seen["tool"] == "Bash" and boards.last_seen(tmp_path / ".lab" / "board", "data") == seen
+    no = run(call("Bash", tmp_path, command="git push"))
+    assert no.returncode == 2 and b"pushes nowhere" in no.stderr
+    assert subprocess.run([sys.executable, str(script), "--role", "data", "--home", str(tmp_path)], input=b"not json",
+                          capture_output=True).returncode == 1  # a broken event never blocks the agent
+
+
+# --- setup, and sharing code through the trunk -------------------------------------------------------------
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    """A small repository that has the lab's tooling committed, set up as a lab (no environments, no benchmark)."""
+    home = tmp_path / "project"
+    (home / "lab").mkdir(parents=True)
+    (home / "sandwm").mkdir()
+    (home / "lab" / "guard.py").write_text("# stand-in\n")
+    (home / "sandwm" / "models.py").write_text("WIDTH = 192\n")
+    (home / "sandwm" / "sim.py").write_text("GRAVITY = 1\n")
+    (home / "cloud.py").write_text("# cloud\n")
+    git("init", "-q", "-b", "main", cwd=home)
+    for key, value in (("user.name", "Tester"), ("user.email", "tester@example.invalid"), ("core.autocrlf", "false")):
+        git("config", key, value, cwd=home)
+    git("add", "-A", cwd=home)
+    git("commit", "-q", "-m", "start", cwd=home)
+    lab = Lab.find(home)
+    setup(lab, sync=False, bench=False, say=lambda *_: None)
+    monkeypatch.delenv("LAB_ROLE", raising=False)
+    monkeypatch.setattr(cli, "sh", lambda cmd, cwd=None: 0)  # "the tests pass", "the cloud job ran"
+    return lab
+
+
+def commit_in(tree: Path, name: str, text: str, message: str) -> None:
+    (tree / name).write_text(text)
+    git("add", name, cwd=tree)
+    git("commit", "-q", "-m", message, cwd=tree)
+
+
+def test_setup_builds_board_trunk_and_worktrees(repo):
+    assert repo.home.name == "project" and repo.ready
+    assert Lab.find(repo.worktree("eval")).home == repo.home, "a worktree finds the same lab"
+    for name in ("PROGRAM.md", "limits.toml", "gates.toml", "gaps.md", "roles/eval.md", "roles/data.md", "roles/train.md",
+                 ".gitignore", "inbox/human/.gitkeep"):
+        assert (repo.board / name).exists(), name
+    program = (repo.board / "PROGRAM.md").read_text(encoding="utf-8")
+    assert "{{" not in program and str(repo.runs) in program
+    assert git("branch", "--show-current", cwd=repo.board) == "lab-board" and git("status", "--porcelain", cwd=repo.board) == ""
+    for role in ("eval", "data", "train"):
+        tree = repo.worktree(role)
+        assert git("branch", "--show-current", cwd=tree) == f"lab-{role}" and (tree / "sandwm" / "models.py").exists()
+        settings = json.loads((tree / ".claude" / "settings.local.json").read_text())
+        assert settings["env"]["LAB_ROLE"] == role
+        hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        assert f"--role {role}" in hook and "guard.py" in hook and "\\" not in hook
+        assert str(repo.board) in settings["permissions"]["additionalDirectories"]
+        assert "Bash(uv run python -m lab *)" in settings["permissions"]["allow"]
+        assert cli.current_role(tree) == role
+    assert cli.current_role(repo.home) == "human"
+    assert git("rev-parse", TRUNK, cwd=repo.home) == git("rev-parse", "main", cwd=repo.home)
+    assert len(boards.gaps(repo.board)) >= 5 and boards.champion(repo.board) == "recon-k4"
+    before = (repo.board / "gaps.md").read_text(encoding="utf-8")
+    (repo.board / "gaps.md").write_text(before + "\nedited by eval\n", encoding="utf-8")
+    setup(repo, sync=False, bench=False, say=lambda *_: None)  # repeating it changes nothing that exists
+    assert (repo.board / "gaps.md").read_text(encoding="utf-8").endswith("edited by eval\n")
+
+
+def test_agent_settings_quote_paths_with_spaces(tmp_path):
+    hook = agent_settings(Lab(tmp_path / "my project"), "eval")["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert '/my project/lab/guard.py"' in hook and '--home "' in hook
+
+
+def test_publish_moves_the_trunk_and_the_others_can_sync(repo):
+    train, data = repo.worktree("train"), repo.worktree("data")
+    commit_in(train, "sandwm/models.py", "WIDTH = 256\n", "[train] wider latent")
+    out = cli.publish(repo, train, "train")
+    assert "published" in out and git("rev-parse", TRUNK, cwd=train) == git("rev-parse", "HEAD", cwd=train)
+    assert cli.publish(repo, train, "train").startswith("nothing to publish")
+    commit_in(data, "sandwm/sim.py", "GRAVITY = 2\n", "[data] heavier")
+    out = cli.publish(repo, data, "data")  # merges train's work first, then moves the trunk
+    assert "published" in out and (data / "sandwm" / "models.py").read_text() == "WIDTH = 256\n"
+    cli.sync(train)
+    assert (train / "sandwm" / "sim.py").read_text() == "GRAVITY = 2\n"
+    assert git("rev-parse", "main", cwd=repo.home) != git("rev-parse", TRUNK, cwd=repo.home), "main is never moved"
+    assert (repo.home / "sandwm" / "models.py").read_text() == "WIDTH = 192\n", "the main checkout is never touched"
+
+
+def test_publish_refuses_failing_tests_the_humans_files_and_dirty_trees(repo, monkeypatch):
+    train = repo.worktree("train")
+    commit_in(train, "sandwm/models.py", "WIDTH = 0\n", "[train] broken")
+    monkeypatch.setattr(cli, "sh", lambda cmd, cwd=None: 1)
+    trunk = git("rev-parse", TRUNK, cwd=train)
+    with pytest.raises(LabError, match="tests fail"):
+        cli.publish(repo, train, "train")
+    assert git("rev-parse", TRUNK, cwd=train) == trunk
+    monkeypatch.setattr(cli, "sh", lambda cmd, cwd=None: 0)
+    commit_in(train, "cloud.py", "# no budget\n", "[train] edit cloud.py")
+    with pytest.raises(LabError, match="are the human's"):
+        cli.publish(repo, train, "train")
+    assert "published" in cli.publish(repo, train, "human")
+    (train / "sandwm" / "models.py").write_text("WIDTH = 1\n")
+    with pytest.raises(LabError, match="uncommitted"):
+        cli.publish(repo, train, "train")
+    with pytest.raises(LabError, match="agent's branch"):
+        cli.publish(repo, repo.home, "human")
+
+
+def test_publish_reports_a_conflict_and_changes_in_anothers_area(repo):
+    train, eval_ = repo.worktree("train"), repo.worktree("eval")
+    commit_in(train, "sandwm/sim.py", "GRAVITY = 3\n", "[train] touch the simulator")
+    assert "in the data agent's area" in cli.publish(repo, train, "train")
+    commit_in(eval_, "sandwm/sim.py", "GRAVITY = 4\n", "[eval] also touch it")
+    with pytest.raises(LabError, match="does not merge cleanly"):
+        cli.publish(repo, eval_, "eval")
+
+
+def test_cloud_jobs_need_published_committed_code(repo, monkeypatch):
+    train = repo.worktree("train")
+    args = cli.build_parser().parse_args(["train", "r0001-test", "--data", "basic64"])
+    commit_in(train, "sandwm/models.py", "WIDTH = 64\n", "[train] narrow")
+    with pytest.raises(LabError, match="not on the trunk"):
+        cli.train(repo, train, "train", args, ["--steps", "10"])
+    cli.publish(repo, train, "train")
+    (train / "sandwm" / "models.py").write_text("WIDTH = 65\n")
+    with pytest.raises(LabError, match="not committed"):
+        cli.train(repo, train, "train", args, ["--steps", "10"])
+    git("checkout", "--", "sandwm/models.py", cwd=train)
+    commands = []
+    monkeypatch.setattr(cli, "sh", lambda cmd, cwd=None: commands.append(cmd) or 0)
+    assert cli.train(repo, train, "train", args, ["--steps", "10", "--model", "embed_dim=64"]) == 1  # the stand-in ran nothing
+    assert commands[0][:5] == ["uv", "run", "modal", "run", "cloud.py::train"]
+    assert "--args=--steps 10 --model embed_dim=64" in commands[0] and "bench-basic-v1" in commands[0]
+    with pytest.raises(LabError, match="names are"):
+        cli.train(repo, train, "train", cli.build_parser().parse_args(["train", "Bad Name", "--data", "x"]), [])
+    bench = cli.build_parser().parse_args(["generate", "bench-oil-v1"])
+    with pytest.raises(LabError, match="benchmarks are named"):
+        cli.generate(repo, train, "data", bench, ["--seed", "5"])
+    with pytest.raises(LabError, match="benchmarks are named"):
+        cli.generate(repo, train, "data", cli.build_parser().parse_args(["generate", "basic-thin-v1"]), ["--seed", "9002"])
+    assert cli.generate(repo, train, "data", bench, ["--episodes", "0", "--seed", "9002"]) == 0
+
+
+def test_booking_through_the_lab_keeps_the_ledger_and_tags_the_code(repo):
+    train = repo.worktree("train")
+    assert jobs.find(train).home == repo.home and jobs.limits(train).gpu_minutes_per_run == 20
+    booking = jobs.book([{"run": "r0001", "data": "basic64", "note": "baseline"}, {"run": "r0002", "data": "basic64"}],
+                        "train", 5, cwd=train)
+    assert booking.minutes == 5 and git("rev-parse", "run/r0001", cwd=repo.home) == git("rev-parse", "HEAD", cwd=train)
+    ledger = Ledger(repo.board)
+    assert ledger.spent() == 10 and ledger.jobs()[0]["by"] == "train" and ledger.jobs()[0]["note"] == "baseline"
+    booking.done("r0001", {"gpu min": 1.5, "gpu": "A10G", "steps": 100})
+    booking.done("r0002", RuntimeError("out of memory"))
+    booking.close()
+    r1, r2 = ledger.jobs()
+    assert r1["end"]["status"] == "ok" and r1["charged"] == 1.5
+    assert r2["end"]["status"] == "failed" and r2["charged"] < 1 and "out of memory" in r2["end"]["error"]
+    assert git("status", "--porcelain", cwd=repo.board) == "", "the ledger is recorded in the board's history"
+    (repo.board / "STOP").write_text("stop")
+    with pytest.raises(Refused):
+        jobs.book([{"run": "r0003"}], cwd=train)
+    with pytest.raises(Refused):
+        jobs.record("generate", cwd=train, dataset="x")
+
+
+def test_no_lab_means_no_bookkeeping(tmp_path):
+    assert jobs.find(tmp_path) is None and jobs.limits(tmp_path) is None and jobs.book([{"run": "abc"}], cwd=tmp_path) is None
+    jobs.record("generate", cwd=tmp_path, dataset="x")
+
+
+def test_command_line_end_to_end(repo, monkeypatch, capsys):
+    train = repo.worktree("train")
+    monkeypatch.chdir(train)
+    assert cli.main(["msg", "eval", "r0001 is ready", "--body", "passes walls/kept@48"]) == 0
+    assert cli.main(["note", "launched", "r0001"]) == 0
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "you are: train" in out and "0.0 of 300 GPU min" in out and "champion  recon-k4" in out
+    assert "last note:" in out and "launched r0001" in out and "blockers: G-001" in out
+    monkeypatch.setenv("LAB_ROLE", "eval")
+    assert cli.main(["inbox"]) == 0 and "r0001 is ready" in capsys.readouterr().out
+    assert cli.main(["ack"]) == 0 and cli.main(["inbox"]) == 0
+    assert "no unread messages" in capsys.readouterr().out
+    assert cli.main(["stop"]) == 1 and "for the human" in capsys.readouterr().err
+    assert cli.main(["budget"]) == 0 and "300.0 left" in capsys.readouterr().out
+    assert cli.main(["runs"]) == 0
+    monkeypatch.setenv("LAB_ROLE", "human")
+    monkeypatch.setattr(cli, "stop_cloud", lambda lab: [])
+    assert cli.main(["stop"]) == 0 and (repo.board / "STOP").exists()
+    assert "STOPPED" in cli.status_text(repo, "human")
+    assert cli.main(["go"]) == 0 and not (repo.board / "STOP").exists()
+    assert git("status", "--porcelain", cwd=repo.board) == ""

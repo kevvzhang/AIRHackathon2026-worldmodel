@@ -1,0 +1,4 @@
+# transient state, not part of the record
+status/
+STOP
+*.lock

@@ -6,3 +6,7 @@ __pycache__/
 # generated artefacts (re-creatable from the commands in README.md)
 data/
 runs/
+
+# the agent lab: worktrees, board and fetched results live here (see lab/README.md)
+.lab/
+.claude/settings.local.json

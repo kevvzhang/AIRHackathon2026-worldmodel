@@ -1,0 +1,4 @@
+recon-k4
+
+The first word of this file is the champion: the run the eval agent would hand to someone today.
+recon-k4 is the reference run from before the lab (see recipes.md); it is here until a run beats it.

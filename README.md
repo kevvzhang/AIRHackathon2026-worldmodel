@@ -10,6 +10,10 @@ minutes, and the same code runs on cloud GPUs through [Modal](https://modal.com)
   vector, and a small causal transformer predicts the next embedding from the action.
 * `sandwm.evaluate` -- open-loop imagination, linear probes of physical quantities, and pictures.
 * `cloud.py` -- the same three steps on Modal GPUs, with datasets and runs kept on a Modal volume.
+* `sandwm.scorecard` -- named checks of what a model gets right (walls kept, mass conserved, ...) on a
+  frozen benchmark, so that any two runs can be compared check by check.
+* `lab/` -- three Claude Code agents (eval, data, train) that improve the model in a loop: see
+  [lab/README.md](lab/README.md).
 
 ## Quick start (laptop)
 
@@ -81,6 +85,10 @@ uv run modal volume get sandwm runs/vit-k2 runs/
 * Everything lives on a Modal volume named `sandwm`, as `data/<dataset>/` and `runs/<run>/`
   (`uv run modal volume ls sandwm runs`).
 * `--detach` keeps a job running if the terminal closes.
+* `--bench <dataset>` on `train`, `sweep` or `reevaluate` also writes a scorecard on that benchmark
+  dataset (`python -m sandwm.scorecard`).
+* Once the agent lab is set up (`python -m lab setup`), every GPU job started through `cloud.py` is
+  booked against the lab's budget first and refused if it does not fit: see `lab/README.md`.
 * `SANDWM_GPU` is an order of preference, default `L4,A10G,T4`: Modal takes the first type it can
   schedule. (A single fixed type sometimes waits many minutes for capacity.) `SANDWM_MAX_GPUS`
   caps how many GPUs a sweep holds at once (default 4).
@@ -280,6 +288,14 @@ skip 4) have been verified in the cloud but not yet run to completion on the lap
   it predicts an average, and imagined frames lose detail as they roll forward.
 * Trained only on the scripted random brush; no agent, no task, 64x64, four materials.
 * The decoder is small (0.35M parameters) and every decoded number goes through it.
+
+## The agent lab (`lab/`)
+
+`lab/` sets up three Claude Code agents that keep improving the model on their own: one judges
+every run and keeps the list of what is wrong, one works on the simulator and the data, one on
+the model and the training runs. They share a board of plain files, a GPU budget enforced in
+code, and a scorecard that turns every discovered failure into a regression check.
+[lab/README.md](lab/README.md) says how to start, watch, steer and stop it.
 
 ## Not started
 
