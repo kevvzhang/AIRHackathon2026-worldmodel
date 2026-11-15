@@ -30,6 +30,10 @@ $board = Join-Path $repo '.lab\board'
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { throw 'claude is not on the PATH.' }
 if (-not (Test-Path (Join-Path $board 'limits.toml'))) { throw "The lab is not set up yet. In $repo run:  uv run python -m lab setup" }
 if (Test-Path (Join-Path $board 'STOP')) { throw "The lab is stopped. To lift the stop, in $repo run:  uv run python -m lab go" }
+if (-not $DryRun -and ($env:CLAUDECODE -or $env:CLAUDE_CODE_CHILD_SESSION)) {
+    # Agents started from inside a Claude Code session become its children and cannot be messaged by the others.
+    throw 'Run this from your own terminal, not from inside a Claude Code session: agents started there cannot be woken by the other agents.'
+}
 
 Push-Location $repo
 try { & uv run python -m lab budget } finally { Pop-Location }

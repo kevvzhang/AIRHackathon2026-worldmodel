@@ -33,8 +33,10 @@ has no fallback: it sleeps until someone writes to it.
     uv run python -m lab snapshot <name>   # name the lab as it is now (the trunk's code and the board)
     uv run python -m lab restore <name>    # go back to a snapshot (stop the lab first)
 
-The first time an agent starts in its worktree, Claude Code may ask whether you trust the
-folder. The laptop has to stay awake: a sleeping machine runs nothing, and a cloud job whose
+Run `launch.ps1` from your own terminal, not from inside a Claude Code session: an agent started
+there is that session's child, has no address of its own, and cannot be woken by the others
+(the launcher refuses). The first time an agent starts in its worktree, Claude Code may ask
+whether you trust the folder. The laptop has to stay awake: a sleeping machine runs nothing, and a cloud job whose
 terminal went away is stopped.
 
 ## How you steer it

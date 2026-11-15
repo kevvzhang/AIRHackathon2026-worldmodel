@@ -33,6 +33,11 @@ if (-not (Test-Path (Join-Path $tree '.claude\settings.local.json'))) {
 if (Test-Path (Join-Path $board 'STOP')) {
     throw "The lab is stopped (STOP is on the board). To lift it, in $repo run:  uv run python -m lab go"
 }
+if (-not $DryRun -and $Program[0] -eq 'claude' -and ($env:CLAUDECODE -or $env:CLAUDE_CODE_CHILD_SESSION)) {
+    # A session started from inside another Claude Code session is that session's child: it gets no
+    # address of its own, so the other agents could never message or wake it.
+    throw "Start lab agents from your own terminal, not from inside a Claude Code session: an agent started there cannot be messaged by the others."
+}
 
 # Both texts are passed to claude.exe as single arguments: keep them on one line, without double quotes.
 $identity = "You are the $Role agent of the sandwm lab: one of four autonomous Claude Code agents (eval, data, train, research) " +
