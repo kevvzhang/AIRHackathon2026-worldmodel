@@ -63,6 +63,25 @@ def test_windows_and_frame_skip(dataset_dir):
         ds.sample(1, 30, 1, np.random.default_rng(0))
 
 
+def test_grouped_batches_and_spread_frames(dataset_dir):
+    ds = EpisodeDataset(dataset_dir, "train")
+
+    def source_episodes(windows):  # brute force: which episode each 4-frame window was cut from
+        return [next(e for e in range(len(ds)) for t in range(ds.episode_len - 2) if (ds.frames[e, t : t + 4] == w).all())
+                for w in windows]
+
+    f, a = ds.sample(32, 4, 1, np.random.default_rng(0), episodes_per_batch=4)
+    assert f.shape == (32, 4, 32, 32) and a.shape == (32, 3, 1, 3)
+    counts = np.bincount(source_episodes(f), minlength=len(ds))
+    assert sorted(counts[counts > 0]) == [8, 8, 8, 8], "expected 4 episodes contributing 8 windows each"
+    assert len(set(source_episodes(ds.sample(32, 4, 1, np.random.default_rng(0))[0]))) > 8  # default: spread widely
+
+    spread = ds.spread(6, 5, np.random.default_rng(0))
+    assert spread.shape == (6, 5, 32, 32)
+    episode = next(e for e in range(len(ds)) if (ds.frames[e, 0] == spread[0, 0]).all())
+    assert (spread[0] == ds.frames[episode, [0, 6, 12, 18, 24]]).all()
+
+
 def test_observations_and_action_encoding(dataset_dir):
     ds = EpisodeDataset(dataset_dir, "train")
     obs = ds.observe(ds.frames[:2, :3])
@@ -79,11 +98,13 @@ def test_observations_and_action_encoding(dataset_dir):
 @pytest.mark.parametrize("frame_skip", [1, 2])
 def test_train_then_evaluate(dataset_dir, tmp_path, frame_skip, capsys):
     run = tmp_path / "run"
+    extra = ["--episodes-per-batch", "2", "--recon-weight", "0.5"] if frame_skip == 2 else []
     train.main(["--data", str(dataset_dir), "--out", str(run), "--steps", "4", "--batch", "8", "--eval-every", "2",
                 "--log-every", "1", "--num-proj", "32", "--frame-skip", str(frame_skip), "--threads", "2",
-                "--model", "embed_dim=32", "proj_hidden=64", "pred_depth=2"])
+                "--model", "embed_dim=32", "proj_hidden=64", "pred_depth=2", *extra])
     rows = [json.loads(line) for line in (run / "metrics.jsonl").read_text().splitlines()]
     assert sum("val_pred" in r for r in rows) == 2 and all(np.isfinite(r["pred"]) for r in rows if "pred" in r)
+    assert all(0 <= r["emb_within"] <= 1 and 0 < r["pixel_within"] < 1 for r in rows if "val_pred" in r)
     assert (run / "ckpt.pt").exists() and (run / "curves.png").exists()
 
     evaluate.main(["--run", str(run), "--windows", "16", "--horizon", "6", "--show", "2"])
@@ -100,4 +121,5 @@ def test_train_then_evaluate(dataset_dir, tmp_path, frame_skip, capsys):
     capsys.readouterr()
     compare.main([str(run), "--frames-ahead", "4"])
     table = capsys.readouterr().out.splitlines()
-    assert len(table) == 3 and table[0].startswith("run") and table[2].startswith("run ")
+    assert table[0].startswith("run") and table[2].startswith("run ") and "within" in table[0]
+    assert 0 <= result["within_episode_share"]["embedding"] <= 1

@@ -22,6 +22,7 @@ import torch
 
 from . import viz
 from .data import EpisodeDataset
+from .metrics import within_episode_share
 from .models import JEPA, Decoder, ModelConfig
 
 
@@ -202,14 +203,19 @@ def main(argv=None) -> None:
     model, decoder, ckpt = load_run(args.run, device)
     data = args.data or Path(ckpt["args"]["data"])
     skip, C = int(ckpt["args"]["frame_skip"]), model.cfg.history
-    train, val = EpisodeDataset(data, "train", 400), EpisodeDataset(data, "val")
+    # probes: frames from many different episodes, or the probe just memorises episodes
+    train, val = EpisodeDataset(data, "train", 2000), EpisodeDataset(data, "val")
     horizon = min(args.horizon, val.episode_len // skip - C + 1)
     out = args.run / "eval"
     out.mkdir(exist_ok=True)
 
     metrics, pictures = rollout_eval(model, decoder, val, args.windows, horizon, skip, args.seed, device)
     probes = probe_eval(model, train, val, 6000, 2000, args.seed, device)
-    (out / "metrics.json").write_text(json.dumps({"step": ckpt["step"], "frame_skip": skip, "rollout": metrics, "probes": probes}, indent=2))
+    spread = val.spread(128, 8, np.random.default_rng(args.seed))  # 8 frames through each of 128 episodes
+    within = {"embedding": within_episode_share(encode(model, val, spread, device)),
+              "pixels": within_episode_share(val.observe(spread).flatten(2))}
+    (out / "metrics.json").write_text(json.dumps({"step": ckpt["step"], "frame_skip": skip, "rollout": metrics, "probes": probes,
+                                                  "within_episode_share": within}, indent=2))
 
     title = f"{args.run.name}: open-loop imagination from {C} context frames ({args.windows} val windows, frame skip {skip})"
     plot_rollout(metrics, out / "rollout_curves.png", title)
@@ -238,6 +244,9 @@ def main(argv=None) -> None:
     print("\n  linear probes, R^2 on validation frames (1 = perfectly linearly readable from the embedding):")
     for name, r2 in probes.items():
         print(f"    {name:20s} {r2:6.3f}")
+    print(f"\n  share of variance lying within episodes rather than between them: embedding {within['embedding']:.3f}, "
+          f"raw pixels {within['pixels']:.3f}")
+    print("  (an embedding far below the pixel value mostly encodes which episode it is, not what is happening in it)")
     print(f"\n  wrote {out}/ (metrics.json, rollout_curves.png, rollout_sheet.png, rollout.gif)")
 
 

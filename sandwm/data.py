@@ -71,13 +71,31 @@ class EpisodeDataset:
         actions = self.actions[episode[:, :, None], ta]
         return frames, actions
 
-    def sample(self, batch: int, n_frames: int, frame_skip: int, rng: np.random.Generator):
+    def sample(self, batch: int, n_frames: int, frame_skip: int, rng: np.random.Generator,
+               episodes_per_batch: int | None = None):
+        """Random windows.  By default every window comes from an independently drawn episode.
+
+        With ``episodes_per_batch = E`` the batch is built from only E episodes, each contributing
+        batch/E windows at different times.  The scenery then repeats inside the batch, so the
+        variation across the batch -- which is what SIGReg asks the embedding to spread out over --
+        is mostly what *changes* during an episode rather than which episode it is.
+        """
         span = (n_frames - 1) * frame_skip
         if span > self.episode_len:
             raise ValueError(f"window of {span} steps does not fit in episodes of {self.episode_len}")
-        episode = rng.integers(0, len(self), size=batch)
+        if episodes_per_batch:
+            chosen = rng.choice(len(self), size=min(episodes_per_batch, len(self)), replace=False)
+            episode = np.resize(chosen, batch)
+        else:
+            episode = rng.integers(0, len(self), size=batch)
         start = rng.integers(0, self.episode_len - span + 1, size=batch)
         return self.window(episode, start, n_frames, frame_skip)
+
+    def spread(self, episodes: int, frames_per_episode: int, rng: np.random.Generator) -> np.ndarray:
+        """(episodes, frames_per_episode, H, W): frames spaced evenly through randomly chosen episodes."""
+        chosen = rng.choice(len(self), size=min(episodes, len(self)), replace=False)
+        t = np.linspace(0, self.episode_len, frames_per_episode).round().astype(int)
+        return self.frames[chosen[:, None], t]
 
     # --- conversion to model inputs ---------------------------------------------------------
     def observe(self, frames: np.ndarray, device: torch.device | str = "cpu") -> torch.Tensor:

@@ -1,7 +1,23 @@
 import pytest
 import torch
 
+from sandwm.metrics import embedding_stats, within_episode_share
 from sandwm.models import PRESETS, JEPA, Decoder, ModelConfig, SIGReg, count_params, jepa_loss, parse_overrides
+
+
+def test_within_episode_share_separates_scene_identity_from_change():
+    episodes, frames, d = 50, 20, 8
+    identity = torch.randn(episodes, 1, d).expand(-1, frames, -1)  # constant within an episode
+    change = torch.randn(episodes, frames, d)  # unrelated to the episode
+    assert within_episode_share(identity) < 1e-6
+    assert 0.9 < within_episode_share(change) <= 1.0
+    assert 0.4 < within_episode_share(identity + change) < 0.6
+
+
+def test_effective_rank():
+    assert embedding_stats(torch.randn(4000, 16))[1] > 15
+    low = torch.randn(4000, 2) @ torch.randn(2, 16)
+    assert embedding_stats(low)[1] < 2.1
 
 
 def small_cfg(**kw):

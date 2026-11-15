@@ -25,19 +25,30 @@ def summarise(run: Path, frames_ahead: int = 16) -> dict:
     i = min(frames_ahead // skip, len(roll["horizon"])) - 1
     lm, mi, ch = roll["latent_mse"], roll["miou"], roll["changed_cell_accuracy"]
     probes = ev["probes"]
+    within = ev.get("within_episode_share")
     return {
         "steps": val["step"],
         "skip": skip,
         "min": round(timing["step"] * timing["sec_per_step"] / 60, 1),
         "rank": round(val["emb_rank"]),
-        "1-step MSE model/frozen": round(val["val_pred"] / val["val_copy"], 3),
-        f"+{frames_ahead}f MSE model/frozen": round(lm["model"][i] / lm["copy"][i], 3),
-        f"+{frames_ahead}f MSE no-action/frozen": round(lm["no_action"][i] / lm["copy"][i], 3),
-        "mIoU model/frozen/ceiling": "/".join(f"{mi[k][i]:.3f}" for k in ("model", "frozen", "ceiling")),
-        "changed-cell acc model/frozen/ceiling": "/".join(f"{ch[k][i]:.3f}" for k in ("model", "frozen", "ceiling")),
-        "probe R2 amount": round(_mean(v for k, v in probes.items() if "amount" in k), 3),
-        "probe R2 position": round(_mean(v for k, v in probes.items() if "centre" in k), 3),
+        "within emb/pix": f"{within['embedding']:.3f}/{within['pixels']:.3f}" if within else "n/a",
+        f"+{frames_ahead}f MSE": round(lm["model"][i] / lm["copy"][i], 3),
+        "no-act": round(lm["no_action"][i] / lm["copy"][i], 3),
+        "mIoU m/f/c": "/".join(f"{mi[k][i]:.3f}" for k in ("model", "frozen", "ceiling")),
+        "changed acc m/f/c": "/".join(f"{ch[k][i]:.3f}" for k in ("model", "frozen", "ceiling")),
+        "R2 amount": round(_mean(v for k, v in probes.items() if "amount" in k), 3),
+        "R2 position": round(_mean(v for k, v in probes.items() if "centre" in k), 3),
     }
+
+
+LEGEND = """
+min           training minutes
+rank          effective rank of the embedding (out of its width)
+within        share of variance lying within episodes rather than between them: embedding / raw pixels
++Nf MSE       latent error of open-loop imagination N raw frames ahead, relative to a frozen latent (below 1 is better)
+no-act        the same with the actions hidden (the gap to the previous column is what the actions contribute)
+m/f/c         model / frozen latent / ceiling (encode+decode of the true future frame), N raw frames ahead
+R2            linear probes from the embedding: material amounts, and material centre-of-mass positions"""
 
 
 def _mean(values) -> float:
@@ -62,6 +73,7 @@ def main(argv=None) -> None:
     names = [run.name for run in args.runs]
     labels = names if len(set(names)) == len(names) else [str(run) for run in args.runs]
     print(format_table({label: summarise(run, args.frames_ahead) for label, run in zip(labels, args.runs)}))
+    print(LEGEND)
 
 
 if __name__ == "__main__":

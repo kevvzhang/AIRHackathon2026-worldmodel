@@ -19,31 +19,16 @@ import torch
 import torch.nn.functional as F
 
 from .data import EpisodeDataset
+from .metrics import embedding_stats, seg_metrics, within_episode_share
 from .models import PRESETS, JEPA, Decoder, ModelConfig, SIGReg, count_params, jepa_loss, parse_overrides
 
 
-def seg_metrics(pred: torch.Tensor, true: torch.Tensor, n_classes: int) -> tuple[float, float]:
-    """Cell accuracy and mean IoU over the non-empty materials (empty space dominates accuracy)."""
-    acc = (pred == true).float().mean().item()
-    ious = []
-    for k in range(1, n_classes):
-        union = ((pred == k) | (true == k)).sum().item()
-        if union:
-            ious.append(((pred == k) & (true == k)).sum().item() / union)
-    return acc, float(np.mean(ious)) if ious else float("nan")
-
-
-def embedding_stats(emb: torch.Tensor) -> tuple[float, float]:
-    """Mean per-dimension std (target 1) and effective rank (participation ratio of the covariance spectrum)."""
-    z = emb.flatten(0, -2)
-    z = z - z.mean(0)
-    eig = torch.linalg.svdvals(z).square() / (len(z) - 1)
-    return z.std(0).mean().item(), (eig.sum().square() / eig.square().sum()).item()
-
-
 @torch.no_grad()
-def validate(model: JEPA, decoder: Decoder, sigreg: SIGReg, obs, act, grid) -> dict:
-    """Metrics on a fixed batch of validation windows: obs (B, T+1, ...), act (B, T, A), grid (B, T+1, H, W)."""
+def validate(model: JEPA, decoder: Decoder, sigreg: SIGReg, obs, act, grid, spread_obs) -> dict:
+    """Metrics on a fixed batch of validation windows: obs (B, T+1, ...), act (B, T, A), grid (B, T+1, H, W).
+
+    spread_obs (E, M, 3, H, W) holds M frames spaced through each of E episodes.
+    """
     was_training = model.training
     model.eval(), decoder.eval()
     emb = model.encode(obs)
@@ -62,6 +47,7 @@ def validate(model: JEPA, decoder: Decoder, sigreg: SIGReg, obs, act, grid) -> d
         "val_sigreg": sigreg(emb.transpose(0, 1)).item(),
         "emb_std": std,
         "emb_rank": rank,
+        "emb_within": within_episode_share(model.encode(spread_obs)),
         "recon_acc": recon_acc,
         "recon_miou": recon_iou,
         "next_acc": next_acc,
@@ -90,6 +76,9 @@ def plot_curves(metrics_path: Path, out_path: Path) -> None:
         ax[2].plot(s, [r["recon_miou"] for r in val], "o-", label="decode(encode(frame)) mIoU")
         ax[2].plot(s, [r["next_miou"] for r in val], "s-", label="decode(1-step prediction) mIoU")
         ax[2].plot(s, [r["emb_rank"] / max(r["emb_rank"] for r in val) for r in val], ":", label="effective rank (rel.)")
+        if "emb_within" in val[0]:
+            ax[2].plot(s, [r["emb_within"] for r in val], "^-", label="within-episode share of embedding variance")
+            ax[2].axhline(val[0]["pixel_within"], color="gray", ls="--", lw=1, label="... the same share for raw pixels")
     ax[0].set(yscale="log", xlabel="step", title="latent prediction MSE")
     ax[1].plot([r["step"] for r in train], [r["sigreg"] for r in train], label="train SIGReg")
     ax[1].set(yscale="log", xlabel="step", title="SIGReg")
@@ -118,6 +107,10 @@ def main(argv=None) -> None:
     p.add_argument("--model", nargs="*", default=[], metavar="KEY=VALUE",
                    help="override any ModelConfig field, e.g. --model encoder=vit vit_patch=4 pred_residual=false")
     p.add_argument("--no-amp", action="store_true", help="disable bfloat16 mixed precision on GPU")
+    p.add_argument("--episodes-per-batch", type=int, default=0,
+                   help="build each batch from this many episodes (0 = one episode per window); see EpisodeDataset.sample")
+    p.add_argument("--recon-weight", type=float, default=0.0,
+                   help="let this fraction of the decoder's gradient into the encoder (0 = pure JEPA, decoder is only a probe)")
     p.add_argument("--decoder-batch", type=int, default=64, help="frames per step used to train the probe decoder")
     p.add_argument("--max-episodes", type=int, default=None, help="use only the first N training episodes")
     p.add_argument("--eval-every", type=int, default=250)
@@ -154,6 +147,9 @@ def main(argv=None) -> None:
     vf, va = val.sample(256, n_frames, args.frame_skip, np.random.default_rng(1234))
     val_obs, val_act = val.observe(vf, device), val.encode_actions(va, device)
     val_grid = torch.from_numpy(vf).long().to(device)
+    spread = val.spread(64, 8, np.random.default_rng(4321))  # 8 frames through each of 64 episodes
+    spread_obs = val.observe(spread, device)
+    pixel_within = within_episode_share(spread_obs.flatten(2))
 
     print(f"data: {len(train)} train / {len(val)} val episodes of {train.episode_len + 1} frames, {train.size}x{train.size}, "
           f"materials={train.materials.name}")
@@ -162,7 +158,8 @@ def main(argv=None) -> None:
           f"probe decoder {count_params(decoder):,} params")
     where = f"{torch.cuda.get_device_name()}, bfloat16 {'on' if model.amp else 'off'}" if device.type == "cuda" else f"{torch.get_num_threads()} CPU threads"
     print(f"config: preset {args.preset}, encoder {cfg.encoder}, frame skip {args.frame_skip}, history {cfg.history}, "
-          f"residual prediction {cfg.pred_residual} | {where}", flush=True)
+          f"residual prediction {cfg.pred_residual}, episodes per batch {args.episodes_per_batch or args.batch}, "
+          f"recon weight {args.recon_weight} | {where}", flush=True)
 
     def save(step: int) -> None:
         torch.save({"model": model.state_dict(), "decoder": decoder.state_dict(), "config": cfg.to_dict(), "step": step,
@@ -176,10 +173,12 @@ def main(argv=None) -> None:
         metrics_file.flush()
 
     def run_validation(step: int) -> None:
-        v = validate(model, decoder, sigreg, val_obs, val_act, val_grid)
+        v = validate(model, decoder, sigreg, val_obs, val_act, val_grid, spread_obs)
+        v["pixel_within"] = pixel_within
         log({"step": step, **v})
         print(f"  val @ {step}: pred {v['val_pred']:.4f} | copy-last {v['val_copy']:.4f} | shuffled-actions "
-              f"{v['val_pred_shuffled_actions']:.4f} | std {v['emb_std']:.2f} rank {v['emb_rank']:.0f}/{cfg.embed_dim} | "
+              f"{v['val_pred_shuffled_actions']:.4f} | rank {v['emb_rank']:.0f}/{cfg.embed_dim} | within-episode "
+              f"{v['emb_within']:.3f} (pixels {pixel_within:.3f}) | "
               f"recon acc {v['recon_acc']:.3f} mIoU {v['recon_miou']:.3f} | 1-step acc {v['next_acc']:.3f} mIoU {v['next_miou']:.3f}",
               flush=True)
 
@@ -187,14 +186,17 @@ def main(argv=None) -> None:
     t_start, step = time.perf_counter(), 0
     try:
         for step in range(1, args.steps + 1):
-            frames, actions = train.sample(args.batch, n_frames, args.frame_skip, rng)
+            frames, actions = train.sample(args.batch, n_frames, args.frame_skip, rng, args.episodes_per_batch)
             obs, act = train.observe(frames, device), train.encode_actions(actions, device)
             loss, out = jepa_loss(model, sigreg, obs, act, args.lambd)
 
-            # probe decoder on detached embeddings: its gradient never reaches the world model
+            # Probe decoder.  With --recon-weight 0 it sees detached embeddings, so its gradient never
+            # reaches the world model; otherwise that fraction of its gradient flows into the encoder.
             pick = torch.randperm(args.batch * n_frames, device=device)[: args.decoder_batch]
             target = torch.from_numpy(frames).to(device).flatten(0, 1)[pick].long()
-            dec_loss = F.cross_entropy(decoder(out["emb"].detach().flatten(0, 1)[pick]), target)
+            emb = out["emb"]
+            dec_in = emb.detach() + args.recon_weight * (emb - emb.detach())
+            dec_loss = F.cross_entropy(decoder(dec_in.flatten(0, 1)[pick]), target)
 
             opt.zero_grad(set_to_none=True)
             (loss + dec_loss).backward()

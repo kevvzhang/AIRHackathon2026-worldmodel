@@ -74,22 +74,43 @@ def train(name: str, data: str = "basic64", args: str = "", horizon: int = 16) -
     return summarise(run)
 
 
+@app.function(image=image, volumes={str(VOL): volume}, gpu=GPU, cpu=4, memory=24576, timeout=3600, max_containers=MAX_GPUS)
+def evaluate(name: str, horizon: int = 16) -> dict:
+    """Evaluate runs/<name> again, e.g. after changing the evaluation code."""
+    from sandwm import evaluate as evaluator
+    from sandwm.compare import summarise
+
+    run = VOL / "runs" / name
+    evaluator.main(["--run", str(run), "--horizon", str(horizon)])
+    volume.commit()
+    return summarise(run)
+
+
+def report(names: list[str], results: list) -> None:
+    from sandwm.compare import LEGEND, format_table
+
+    done = {name: result for name, result in zip(names, results) if not isinstance(result, Exception)}
+    print("\n=== results ===")
+    if done:
+        print(format_table(done))
+        print(LEGEND)
+    for name, result in zip(names, results):
+        if isinstance(result, Exception):
+            print(f"{name} FAILED: {result!r}")
+
+
 @app.local_entrypoint()
 def sweep(spec: str, data: str = "basic64", horizon: int = 16) -> None:
     """Train several runs in parallel.  spec is  "name: train args; other-name: train args"."""
     jobs = [(name.strip(), data, args.strip(), horizon)
             for name, _, args in (item.partition(":") for item in spec.split(";") if item.strip())]
-    print(f"launching {len(jobs)} runs on {'/'.join(GPU)} (at most {MAX_GPUS} at a time): {', '.join(j[0] for j in jobs)}",
-          flush=True)
-    results = list(train.starmap(jobs, return_exceptions=True))
+    names = [job[0] for job in jobs]
+    print(f"launching {len(jobs)} runs on {'/'.join(GPU)} (at most {MAX_GPUS} at a time): {', '.join(names)}", flush=True)
+    report(names, list(train.starmap(jobs, return_exceptions=True)))
 
-    from sandwm.compare import format_table
 
-    done = {job[0]: result for job, result in zip(jobs, results) if not isinstance(result, Exception)}
-    print("
-=== sweep results ===")
-    if done:
-        print(format_table(done))
-    for job, result in zip(jobs, results):
-        if isinstance(result, Exception):
-            print(f"{job[0]} FAILED: {result!r}")
+@app.local_entrypoint()
+def reevaluate(names: str, horizon: int = 16) -> None:
+    """Evaluate existing runs again, in parallel.  names is comma-separated."""
+    runs = [name.strip() for name in names.split(",") if name.strip()]
+    report(runs, list(evaluate.starmap([(run, horizon) for run in runs], return_exceptions=True)))
