@@ -12,3 +12,13 @@ def test_cloud_app_is_well_formed():
     for name in ("generate", "train", "evaluate", "sweep", "reevaluate"):
         assert hasattr(cloud, name), f"cloud.py lost its {name!r} entry point"
     assert isinstance(cloud.GPU, list) and cloud.GPU
+
+
+def test_log_lines_are_tagged_with_the_run_name(capsys):
+    import cloud
+
+    with cloud.tagged("run-a"):
+        print("one")
+        print("two\nthree", end="")
+        print(" four")
+    assert capsys.readouterr().out == "[run-a] one\n[run-a] two\n[run-a] three four\n"

@@ -23,8 +23,10 @@ and SANDWM_MAX_GPUS (default 4), the most GPUs a sweep may hold at once.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
+import sys
 from importlib.metadata import version
 from pathlib import Path
 
@@ -67,9 +69,10 @@ def train(name: str, data: str = "basic64", args: str = "", horizon: int = 16) -
     from sandwm.compare import summarise
 
     run = VOL / "runs" / name
-    trainer.main(["--data", str(VOL / "data" / data), "--out", str(run), *shlex.split(args)])
-    volume.commit()  # the checkpoint is safe even if the evaluation fails
-    evaluate.main(["--run", str(run), "--horizon", str(horizon)])
+    with tagged(name):
+        trainer.main(["--data", str(VOL / "data" / data), "--out", str(run), *shlex.split(args)])
+        volume.commit()  # the checkpoint is safe even if the evaluation fails
+        evaluate.main(["--run", str(run), "--horizon", str(horizon)])
     volume.commit()
     return summarise(run)
 
@@ -81,9 +84,30 @@ def evaluate(name: str, horizon: int = 16) -> dict:
     from sandwm.compare import summarise
 
     run = VOL / "runs" / name
-    evaluator.main(["--run", str(run), "--horizon", str(horizon)])
+    with tagged(name):
+        evaluator.main(["--run", str(run), "--horizon", str(horizon)])
     volume.commit()
     return summarise(run)
+
+
+class _Tagged:
+    """A stream that prefixes every line, so the logs of parallel runs can be told apart."""
+
+    def __init__(self, stream, tag: str) -> None:
+        self.stream, self.tag, self.at_line_start = stream, tag, True
+
+    def write(self, text: str) -> int:
+        for line in text.splitlines(keepends=True):
+            self.stream.write((self.tag if self.at_line_start else "") + line)
+            self.at_line_start = line.endswith("\n")
+        return len(text)
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+
+def tagged(name: str):
+    return contextlib.redirect_stdout(_Tagged(sys.stdout, f"[{name}] "))
 
 
 def report(names: list[str], results: list) -> None:
