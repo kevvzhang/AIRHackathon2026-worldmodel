@@ -178,12 +178,52 @@ What to do with one:
 4. A new probe check starts ungated. Make it a gate once you know what the truth scores on it,
    and that failing it is something a person watching would call wrong.
 
-Keep at it without letting it take over. With every batch of verdicts, move at least one entry
-of `coverage.md` forward. Reread the whole map when a champion is crowned and when a feature
-opens. Keep the probes small, so that scoring a run on all of them still takes minutes on the
-laptop. Coverage work runs beside everything else and does not hold up a feature, unless a probe
+Keep at it. Nothing forces this work and nobody asks for it, so it is the first thing to be
+dropped: a run is always waiting, a track is always urgent. Do not drop it. The human reads
+`coverage.md` and expects it to shrink.
+
+- In every tick in which `coverage.md` has an entry that is not covered, move one entry one
+  step before you turn to track work or to anything else that can wait: score a probe that
+  exists, write the check, or ask data for the probe. Only the verdict on a run that is
+  already waiting goes first. `lab status` tells you when the list has stood still too long.
+- A probe that exists is scored in the same tick. That is a background job in the cloud (see
+  "Where scoring runs"): starting it takes a minute, it competes with nothing on the laptop,
+  and you are woken when the card is back.
+- "Top priority" for a track or a feature orders your attention. It does not pause a scoring
+  that runs in the cloud, and it does not cancel the one step per tick.
+- Hand over what is mechanical. Data builds the probes and, when you ask, starts their scoring
+  too. What a probe must contain and what its numbers mean stay with you.
+- When a card is back, decide in that tick: what the champion fails becomes an entry in
+  `gaps.md`, what it passes is recorded in `coverage.md` as covered, with the number.
+
+Reread the whole map when a champion is crowned and when a feature opens. Keep the probes
+small. Coverage work runs beside everything else and does not hold up a feature, unless a probe
 shows the model plainly wrong: then it is a blocker like any other. And say in each verdict
 what it could not see.
+
+## Where scoring runs
+
+The laptop has no GPU and little free memory, and all four agents work on it. Twice on
+2026-11-15 Claude Code stopped scoring jobs there because memory ran low, and the probes for
+the human's own coverage entries stayed unscored for nine hours. So:
+
+- On the laptop: only what takes a few minutes. One model on the main benchmark, a `--diff`,
+  a look at pictures. One job at a time, 2 threads.
+- In the cloud: everything else. The probes, the long benchmarks, rollouts of a thousand
+  frames, a twin with many samples, one run on several benchmarks:
+  `uv run python -m lab score <run> --card <card> --bench <bench> --also <bench> <bench> -- <scorecard options>`
+  It runs `sandwm.scorecard` on cloud CPUs with your published code (publish a new check
+  first), uploads a benchmark that the cloud volume lacks from the shared datasets folder, and
+  copies the card into the shared runs folder as `<run>\eval\<card>.json`, where the laptop's
+  cards are. Give the run first, and benchmarks by name, not by path. `<card>` is `scorecard`
+  for the run's own card and any other name for a card of its own (`probes`, `coverage`).
+  The world against itself: `uv run python -m lab score truth-twin --card <card> --bench <bench> -- --twin 1`.
+- Run it as a background command and go on working. It uses no GPU, books nothing in the GPU
+  budget and waits for no GPU slot. It costs about a cent a minute, so score what somebody
+  will read. A job is stopped after `cpu_minutes_per_job` minutes (`limits.toml`): split a
+  scoring that needs longer into two cards.
+- If Claude Code stops a job of yours because memory ran low, start it again in the cloud. You
+  need not ask the human for that.
 
 ## When no run is waiting
 

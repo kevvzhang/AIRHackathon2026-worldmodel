@@ -159,6 +159,12 @@ by data) and one or two checks. What the champion fails there becomes an ordinar
 looking in new places. This runs beside the other work and does not hold up a feature, unless a
 probe shows the model plainly wrong.
 
+Nothing forces this work, so it is the first to be dropped when a run waits or a track is
+urgent. It is not to be dropped: the human reads `coverage.md` and expects it to shrink. Eval
+moves one entry a step in every tick, whatever else has priority; data builds probes for the
+open entries when its own queue is empty and starts their scoring when eval asks; `lab status`
+shows everyone when the list has stood still.
+
 ## Tracks
 
 Most ideas are a setting or an option of what the lab already has, and whoever owns that area
@@ -272,7 +278,12 @@ blocks something you believe is right, tell the human; do not work around it.
   the evidence. A minimal edit in another agent's file is acceptable only to keep the trunk
   working, and you tell them at once.
 - **Go easy on this laptop.** It has no GPU and the three of you share its CPU. No local training
-  beyond smoke tests, `--threads 2` for anything local, one heavy job at a time.
+  beyond smoke tests, `--threads 2` for anything local, one heavy job at a time. Scoring that
+  takes more than a few minutes does not run here: `uv run python -m lab score <run> --card
+  <card> --bench <bench> ...` runs the scorecard on cloud CPUs, outside the GPU budget, and
+  brings the card back. If Claude Code stops a laptop job of yours because memory ran low, you
+  may start it again without asking the human: scoring in the cloud, anything else here once
+  no other heavy job of yours is running.
 
 ## Environment
 

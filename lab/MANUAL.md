@@ -165,6 +165,16 @@ intermittent actions, messy scenes), properties no check measures, numbers that 
 trusted yet. It turns each entry into a small probe benchmark and checks, and what the champion
 fails there becomes an ordinary gap. `lab status` shows how many entries are still uncovered.
 
+Nothing forces that work, so it is easily dropped when a run waits or a track is urgent. Three
+things keep it going. Eval is told to move one entry a step in every tick, whatever else has
+priority, and data to build probes for open entries when its queue is empty. `lab status` marks
+the list when `coverage.md` has not changed for `coverage_hours` (2 by default) while entries
+are uncovered, and tells eval what to do. And scoring does not depend on this laptop:
+`uv run python -m lab score <run> --card <card> --bench <bench> --also <bench> ...` runs the
+scorecard on 8 cloud CPUs (no GPU, outside the GPU budget, about a cent a minute), uploads a
+benchmark the volume lacks, and copies the card into `.lab\runs\<run>\eval`. Before, eval's long
+scorings ran on the laptop, slowly, and Claude Code stopped them twice when memory ran low.
+
 ## What is enforced, and by what
 
 | rule | enforced by |
@@ -190,7 +200,7 @@ Usage and billing in the Modal dashboard.
 
 - **GPU**: at most `gpu_minutes_total` in `limits.toml` (300 minutes by default, roughly $6-8
   on L4/A10G including the container's CPU and memory) per start of the lab. Dataset generation
-  on cloud CPUs adds cents. Of that total, research tracks may use at most `gpu_minutes_tracks`.
+  and scoring (`lab score`) on cloud CPUs add cents: neither is counted in the GPU minutes. Of that total, research tracks may use at most `gpu_minutes_tracks`.
   The total is counted per budget period. `launch.ps1` begins a new period, with the count back
   at zero, whenever it starts the lab while no lab agent is running; `-KeepBudget` prevents
   that, and `uv run python -m lab budget --new` does it by hand. Starting one agent beside

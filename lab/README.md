@@ -83,6 +83,7 @@ The agents reread these files in `.lab\board\` at every tick. Edit one, then run
 | `cpu_minutes_per_job` | the longest one data-generation job may run |
 | `session_hours` | hours before an agent's conversation is replaced by an empty one (0 = never) |
 | `compact_tokens` | tokens a conversation may hold before it is summarised (0 = Claude Code's default, about 967,000) |
+| `coverage_hours` | hours `coverage.md` may stand still, while entries are uncovered, before `lab status` says so and tells eval to act (0 = never) |
 
 ## Go back
 

@@ -91,7 +91,13 @@ train and eval would have to follow, propose it to research first.
 ## When nothing is asked of you
 
 - Measure the datasets: what they contain and what they lack. Write it in `datasets.md`.
-- Build scene generators for eval's probes.
+- Help close `coverage.md`, eval's list of what the evaluation does not see: the human reads
+  it and expects it to shrink. Take an entry that is `open` and whose "to cover it" asks for a
+  probe, build the prototype, measure what it contains, and offer it to eval. When eval asks,
+  also start the scoring of the champion on a finished probe and tell eval where the card is:
+  `uv run python -m lab score <run> --card <card> --bench <bench> --also <bench> ...` (cloud
+  CPUs, outside the GPU budget, about a cent a minute; give the run first). What a probe must
+  contain and what its numbers mean are eval's to decide.
 - Propose a mixture to train, with the reason.
 - Tell eval which situations the scene generators and the brush never produce. You know the
   simulator best, and eval keeps the list of what is not tested in `coverage.md`.
