@@ -75,7 +75,7 @@ class Booking:
         self.asked = time.perf_counter()
         try:
             states = self.ledger.admit([self.jobs[run] for run in self.line])
-        except LabError as err:  # the lock is busy, or limits.toml is being edited: the next look will do
+        except (LabError, OSError) as err:  # the lock is busy, or a file is being edited: the next look will do
             print(f"(could not look at the line for a GPU slot: {err})", flush=True)
             return
         changed = [run for run in self.line if states[self.jobs[run]] != "wait"]
