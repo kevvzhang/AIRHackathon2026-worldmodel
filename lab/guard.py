@@ -34,6 +34,9 @@ STOPPED = ("STOP: the human has stopped the lab. Do not retry and do not work ar
 TRIPWIRES = [
     (r"limits\.toml|ledger\.jsonl",
      "The lab's limits and ledger are read with the Read tool or `uv run python -m lab budget`, and changed only by the human."),
+    (r"\blab\s+budget\s+(-\S+\s+)*--new\b",
+     "A new budget period is the human's to start; it happens when they start the lab. If the budget is in your way, say what "
+     "more would buy:  uv run python -m lab msg human ..."),
     (r"\.modal\.toml|\bmodal\s+(token|secret|profile|config|setup|deploy|serve|shell|workspace|environment)\b",
      "Modal credentials, configuration and deployments are off limits."),
     (r"\bmodal\s+run\b",

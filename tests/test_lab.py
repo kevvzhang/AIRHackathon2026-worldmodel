@@ -180,6 +180,7 @@ def test_guard_trips_on_commands_that_leave_the_lab(tmp_path):
         assert blocked(fine) is None, fine
     assert "lab train" in blocked("uv run modal run cloud.py::train --name x")
     assert "lab train" in blocked("uv run modal run --detach cloud.py::sweep --spec 'a: '", "PowerShell")
+    assert "human's to start" in blocked("uv run python -m lab budget --new")
     assert "limits and ledger" in blocked("sed -i 's/300/9000/' ../board/limits.toml")
     assert "limits and ledger" in blocked("Add-Content ..\\board\\ledger.jsonl '{}'", "PowerShell")
     assert "off limits" in blocked("cat ~/.modal.toml")
@@ -520,6 +521,33 @@ def test_tracks_draw_on_the_same_total_as_everything_else(board):
     assert ledger.summary()["tracks_cap"] == 30 and ledger.summary()["spent"] == 60
 
 
+def test_starting_the_lab_again_begins_a_new_budget_period(repo, monkeypatch, capsys):
+    ledger = Ledger(repo.board)  # the template's limits: 300 in total, 20 a run, 2 at once
+    assert ledger.new_period() is None and ledger.period() == (0, None), "nothing spent yet: the period goes on"
+    (a,) = ledger.reserve([{"run": "r0001", "by": "train"}], minutes=20)
+    ledger.settle(a, 12.5, "ok")
+    (b,) = ledger.reserve([{"run": "t001-first", "by": "train"}], minutes=20)  # still running when the lab is started again
+    assert ledger.spent() == 32.5
+    monkeypatch.chdir(repo.home)
+    monkeypatch.setenv("LAB_ROLE", "train")
+    assert cli.main(["budget", "--new"]) == 1 and "for the human" in capsys.readouterr().err
+    monkeypatch.setenv("LAB_ROLE", "human")
+    assert cli.main(["budget", "--new"]) == 0
+    out = capsys.readouterr().out
+    assert "The one that ends used 32.5 GPU min" in out and "GPU minutes: 0.0 spent or booked of 300" in out
+    assert "before that: 32.5 min" in out and git("status", "--porcelain", cwd=repo.board) == ""
+    assert ledger.period()[0] == 1 and ledger.spent() == 0 and ledger.summary()["before"] == 32.5
+    assert cli.main(["budget", "--new"]) == 0 and "it goes on" in capsys.readouterr().out and ledger.period()[0] == 1
+    ledger.settle(b, 5, "ok")  # a job of the period that ended is charged to that period
+    assert ledger.spent() == 0 and ledger.summary()["before"] == 17.5 and ledger.summary()["tracks"] == {}
+    with pytest.raises(Refused, match="already used"):  # the record is kept: a run name stays used for good
+        ledger.reserve([{"run": "r0001"}], minutes=5)
+    ledger.reserve([{"run": "r0002", "by": "train"}], minutes=20)
+    assert ledger.spent() == 20 and [j["period"] for j in ledger.jobs()] == [0, 0, 1] and ledger.summary()["by"] == {"train": 20.0}
+    assert cli.main(["status"]) == 0
+    assert "20.0 of 300 GPU min spent or booked since the lab was started just now" in capsys.readouterr().out
+
+
 def test_track_list_is_read_from_the_board(board):
     assert boards.tracks(board) == []
     (board / "tracks.md").write_text("# Tracks\n    ### T-009 | an example in the header | active\n"
@@ -749,3 +777,22 @@ def test_the_launcher_passes_the_compaction_limit_and_resumes_by_id(repo):
     (repo.board / "status").mkdir(exist_ok=True)
     (repo.board / "status" / "eval.json").write_text(json.dumps({"session": "0a1b2c3d-1111-2222-3333-444455556666"}))
     assert "--resume 0a1b2c3d-1111-2222-3333-444455556666" in dry_run("-Continue"), "--continue skips /loop conversations"
+
+    # A real start, with a program that ends at once in place of claude: the agent's checkout is first brought up to
+    # the trunk when that is a fast-forward, and left alone when the agent has commits of its own.
+    def start(role: str) -> None:
+        command = f"& '{script}' -Role {role} -Program '{sys.executable}','-c','import sys'"
+        done = subprocess.run([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], capture_output=True,
+                              text=True)
+        assert done.returncode == 0, done.stderr
+
+    commit_in(repo.worktree("train"), "sandwm/models.py", "WIDTH = 256\n", "wider")
+    cli.publish(repo, repo.worktree("train"), "train")
+    trunk = git("rev-parse", TRUNK, cwd=repo.home)
+    assert git("rev-parse", "HEAD", cwd=repo.worktree("eval")) != trunk
+    start("eval")
+    assert git("rev-parse", "HEAD", cwd=repo.worktree("eval")) == trunk, "fast-forwarded to the trunk"
+    commit_in(repo.worktree("data"), "sandwm/sim.py", "GRAVITY = 2\n", "unpublished work")
+    mine = git("rev-parse", "HEAD", cwd=repo.worktree("data"))
+    start("data")
+    assert git("rev-parse", "HEAD", cwd=repo.worktree("data")) == mine, "an agent with work of its own merges when it publishes"

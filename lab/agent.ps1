@@ -183,6 +183,9 @@ $Host.UI.RawUI.WindowTitle = "lab-$Role"
 $exe = $Program[0]
 $resume = [bool]$Continue
 while ($true) {
+    # Begin on the current trunk when that is only a fast-forward (the agent has nothing unpublished), so that a new
+    # conversation has the lab's current tooling. Through cmd, because this shell turns git's messages into errors.
+    & cmd.exe /c "git -C `"$tree`" merge --ff-only --quiet lab-trunk >nul 2>&1"
     $all = @($Program | Select-Object -Skip 1) + @(Get-ClaudeArgs $resume)
     # The key of this launch. The guard hook and `python -m lab fresh` see it in the conversation's environment
     # and know from it that this script is there to replace the conversation.

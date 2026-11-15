@@ -4,6 +4,10 @@
 long one job may run, and how many may run at once.  `ledger.jsonl` beside it gets a "start" line
 before every cloud GPU job and an "end" line after it.  A job that started and never reported an
 end is charged its full allowance, so the ledger can over-count but never under-count.
+
+The total is counted per budget period.  A period ends when the human starts the lab again from a
+standstill (lab/launch.ps1, or `python -m lab budget --new`): a "period" line goes into the ledger
+and the count begins at zero, while the jobs of earlier periods stay on record.
 """
 
 from __future__ import annotations
@@ -72,15 +76,47 @@ class Ledger:
         return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     def jobs(self) -> list[dict]:
-        """Every GPU job in the order it started: its start line, plus `end` (its end line or None) and `charged` minutes."""
+        """Every GPU job in the order it started: its start line, plus `end` (its end line or None), `charged` minutes
+        and `period`, the budget period it was booked in (0 until the first `new_period`, then 1, ...)."""
         events = self.events()
         ends = {e["job"]: e for e in events if e.get("event") == "end"}
-        return [{**e, "end": ends.get(e["job"]), "charged": float(ends[e["job"]]["gpu_min"] if e["job"] in ends else e["cap_min"])}
-                for e in events if e.get("event") == "start"]
+        period, found = 0, []
+        for e in events:
+            if e.get("event") == "period":
+                period += 1
+            elif e.get("event") == "start":
+                found.append({**e, "end": ends.get(e["job"]), "period": period,
+                              "charged": float(ends[e["job"]]["gpu_min"] if e["job"] in ends else e["cap_min"])})
+        return found
+
+    def period(self) -> tuple[int, str | None]:
+        """The number of the current budget period and when it began (None for the first: it began with the lab)."""
+        marks = [e for e in self.events() if e.get("event") == "period"]
+        return len(marks), (marks[-1]["t"] if marks else None)
+
+    def current(self, jobs: list[dict] | None = None) -> list[dict]:
+        """The jobs of the current budget period: the ones `gpu_minutes_total` is counted over."""
+        number = self.period()[0]
+        return [j for j in (self.jobs() if jobs is None else jobs) if j["period"] == number]
 
     def spent(self) -> float:
-        """GPU minutes used by finished jobs plus the full allowance of every job that has not reported back."""
-        return sum(job["charged"] for job in self.jobs())
+        """GPU minutes of the current budget period: what finished jobs used, plus the full allowance of every job
+        that has not reported back."""
+        return sum(job["charged"] for job in self.current())
+
+    def new_period(self, by: str = "human") -> float | None:
+        """Start a new budget period: `gpu_minutes_total` counts from zero again.  The human's, when the lab is started.
+
+        Returns the minutes the period that ends had used, or None if it had used none (then it simply goes on).
+        Nothing is forgotten: the jobs stay in the ledger, and a run name stays used for good.
+        """
+        with locked(self.lock):
+            used = sum(job["charged"] for job in self.current())
+            if not used:
+                return None
+            with self.path.open("a", encoding="utf-8", newline="\n") as f:
+                f.write(json.dumps({"event": "period", "t": stamp(), "by": by, "closed_min": round(used, 2)}) + "\n")
+            return used
 
     def running(self) -> list[dict]:
         """Jobs with no end line that are young enough to still be running."""
@@ -108,13 +144,14 @@ class Ledger:
                 used = sorted(set(names) & {j["run"] for j in jobs if j.get("kind") == "train"})
                 if used:
                     raise Refused(f"run name already used: {', '.join(used)}. Every training run needs a new name.")
-            spent = sum(j["charged"] for j in jobs)
+            counted = self.current(jobs)  # the total and the tracks' ceiling count the current budget period only
+            spent = sum(j["charged"] for j in counted)
             if spent + cap * len(names) > limits.gpu_minutes_total + 1e-9:
                 raise Refused(f"GPU budget: {spent:.1f} of {limits.gpu_minutes_total:g} minutes are spent or booked, so "
                               f"{len(names)} more job(s) of up to {cap:g} min do not fit. {NO_WAY_AROUND}")
             on_tracks = [name for name in names if track_of(name)]
             if on_tracks:  # side lines may not crowd out the main line
-                used = sum(j["charged"] for j in jobs if track_of(j["run"]))
+                used = sum(j["charged"] for j in counted if track_of(j["run"]))
                 if used + cap * len(on_tracks) > limits.tracks_cap + 1e-9:
                     raise Refused(f"track budget: research tracks have used or booked {used:.1f} of the {limits.tracks_cap:g} GPU "
                                   f"minutes they may use together, so {len(on_tracks)} more track job(s) of up to {cap:g} min do "
@@ -145,13 +182,18 @@ class Ledger:
                 f.write(json.dumps({"event": "note", "t": stamp(), **event}) + "\n")
 
     def summary(self) -> dict:
+        """The budget as it stands.  `spent`, `by` and `tracks` are of the current budget period; `before` is what
+        earlier periods used, `since` when this one began (None: with the lab)."""
         jobs, limits = self.jobs(), self.limits
+        number, since = self.period()
+        counted = [j for j in jobs if j["period"] == number]
         by: dict[str, float] = {}
         tracks: dict[str, float] = {}
-        for j in jobs:
+        for j in counted:
             by[j.get("by", "?")] = by.get(j.get("by", "?"), 0.0) + j["charged"]
             if track_of(j["run"]):
                 tracks[track_of(j["run"])] = tracks.get(track_of(j["run"]), 0.0) + j["charged"]
-        return {"spent": sum(j["charged"] for j in jobs), "total": limits.gpu_minutes_total, "per_run": limits.gpu_minutes_per_run,
+        return {"spent": sum(j["charged"] for j in counted), "total": limits.gpu_minutes_total, "per_run": limits.gpu_minutes_per_run,
                 "concurrent": limits.max_concurrent_gpu_runs, "running": self.running(), "by": by, "jobs": len(jobs),
-                "tracks": tracks, "tracks_cap": limits.tracks_cap}
+                "tracks": tracks, "tracks_cap": limits.tracks_cap, "period": number, "since": since,
+                "before": sum(j["charged"] for j in jobs if j["period"] < number)}

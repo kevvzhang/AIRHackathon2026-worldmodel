@@ -221,7 +221,9 @@ agent, as a **track**.
 ## Hard rules
 
 1. **Money.** Cloud GPU jobs are started only with `uv run python -m lab train`. It books the job
-   against the budget in `limits.toml` and refuses a job that does not fit. When refused: stop
+   against the budget in `limits.toml` and refuses a job that does not fit. The budget is counted
+   from the last time the human started the lab (`lab status` says since when), and only the
+   human begins a new count. When refused: stop
    launching, do the work that needs no GPU, and tell the human once if more budget would change
    what the lab can achieve. Never look for another route. Datasets are simulated on cloud CPUs
    with `uv run python -m lab generate`: that costs cents, not nothing, so no dataset is larger

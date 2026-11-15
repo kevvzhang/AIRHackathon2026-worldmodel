@@ -179,8 +179,15 @@ Usage and billing in the Modal dashboard.
 ## What it costs
 
 - **GPU**: at most `gpu_minutes_total` in `limits.toml` (300 minutes by default, roughly $6-8
-  on L4/A10G including the container's CPU and memory). Dataset generation on cloud CPUs adds cents.
-  Of that total, research tracks may use at most `gpu_minutes_tracks`.
+  on L4/A10G including the container's CPU and memory) per start of the lab. Dataset generation
+  on cloud CPUs adds cents. Of that total, research tracks may use at most `gpu_minutes_tracks`.
+  The total is counted per budget period. `launch.ps1` begins a new period, with the count back
+  at zero, whenever it starts the lab while no lab agent is running; `-KeepBudget` prevents
+  that, and `uv run python -m lab budget --new` does it by hand. Starting one agent beside
+  others that are still running does not begin a new period, and neither do the fresh starts.
+  So the total caps one run of the lab, not all of them together: every start from a standstill
+  allows that many minutes again. Earlier periods stay in the ledger (`lab budget` shows what
+  they used).
 - **Claude usage**: three Opus sessions at effort xhigh. An agent with nothing to do sleeps
   until a job of its own ends or another agent messages it, and otherwise wakes once every
   2 hours as a fallback. Usage is still by far the larger cost, and it comes out of your Claude

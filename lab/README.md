@@ -17,6 +17,15 @@ uv run python -m lab go                   # lift the stop; then launch again
 To restart an agent by hand, close its tab first, then start it again. A cloud job it has
 running ends with the tab.
 
+The GPU budget is counted per start of the lab. When `launch.ps1` runs while no lab agent is
+running, the count goes back to zero and the lab may spend `gpu_minutes_total` again. Starting
+one agent beside others that are still running keeps the count, and so do the fresh starts.
+
+```powershell
+.\lab\launch.ps1 -KeepBudget              # start the lab but let the old count go on
+uv run python -m lab budget --new         # begin a new count now, without restarting anything
+```
+
 ## Fresh starts
 
 About every 6 hours an agent's conversation is replaced by an empty one, in the same tab, so
@@ -67,7 +76,7 @@ The agents reread these files in `.lab\board\` at every tick. Edit one, then run
 
 | in `limits.toml` | meaning |
 |------------------|---------|
-| `gpu_minutes_total` | all the GPU minutes the lab may spend |
+| `gpu_minutes_total` | the GPU minutes the lab may spend per start (see "Start and stop") |
 | `gpu_minutes_per_run` | the longest one job may run |
 | `max_concurrent_gpu_runs` | jobs at once |
 | `gpu_minutes_tracks` | the part of the total that research tracks may use |

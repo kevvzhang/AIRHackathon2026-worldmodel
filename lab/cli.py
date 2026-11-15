@@ -19,6 +19,8 @@ Agents run these from their own worktree, the human from the main checkout.
 
 For the human only:
 
+    budget --new                   start a new budget period: the total counts from zero again (lab/launch.ps1 does
+                                   this when it starts the lab from a standstill)
     setup                          create the board, the trunk and the three worktrees (safe to repeat)
     stop [--keep-cloud]            stop every agent at its next tool call, and the lab's cloud jobs
     go                             lift the stop, so that agents can be started again
@@ -99,7 +101,8 @@ def budget_text(lab: Lab) -> str:
     running = "; ".join(f"{j['run']} by {j.get('by', '?')}, started {ago(j['t'])}" for j in s["running"]) or "none"
     by = ", ".join(f"{who} {minutes:.1f}" for who, minutes in sorted(s["by"].items())) or "nothing yet"
     on_tracks = ", ".join(f"{track} {minutes:.1f}" for track, minutes in sorted(s["tracks"].items())) or "nothing yet"
-    return (f"GPU minutes: {s['spent']:.1f} spent or booked of {s['total']:g}  ({max(s['total'] - s['spent'], 0):.1f} left)\n"
+    since = f"\ncounted since the lab was started {ago(s['since'])}; before that: {s['before']:.1f} min" if s["since"] else ""
+    return (f"GPU minutes: {s['spent']:.1f} spent or booked of {s['total']:g}  ({max(s['total'] - s['spent'], 0):.1f} left){since}\n"
             f"limits: one job <= {s['per_run']:g} min, <= {s['concurrent']} at once\n"
             f"running: {running}\nby agent: {by}\n"
             f"research tracks: {sum(s['tracks'].values()):.1f} of the {s['tracks_cap']:g} min they may use together "
@@ -112,7 +115,8 @@ def status_text(lab: Lab, role: str) -> str:
     stopped = "   ** STOPPED by the human **" if (board / "STOP").exists() else ""
     lines = [f"sandwm lab  {stamp()}  you are: {role}{stopped}"]
     running = ", ".join(f"{j['run']} ({j.get('by', '?')}, {ago(j['t'])})" for j in s["running"]) or "none"
-    lines.append(f"budget    {s['spent']:.1f} of {s['total']:g} GPU min spent or booked; one job <= {s['per_run']:g} min, "
+    since = f" since the lab was started {ago(s['since'])}" if s["since"] else ""
+    lines.append(f"budget    {s['spent']:.1f} of {s['total']:g} GPU min spent or booked{since}; one job <= {s['per_run']:g} min, "
                  f"<= {s['concurrent']} at once; running: {running}")
 
     ahead = git("rev-list", "--count", f"main..{TRUNK}", cwd=lab.home, check=False)
@@ -315,7 +319,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--data", action="store_true", help="fetch a dataset instead of a run")
     f.add_argument("--again", action="store_true", help="download it even if it is already here")
     sub.add_parser("runs").add_argument("-n", type=int, default=25)
-    sub.add_parser("budget")
+    sub.add_parser("budget").add_argument("--new", action="store_true",
+                                          help="for the human: start a new budget period, the total counts from zero again")
     s = sub.add_parser("setup")
     s.add_argument("--no-sync", action="store_true", help="do not install the Python environments")
     s.add_argument("--no-bench", action="store_true", help="do not generate the benchmark dataset")
@@ -385,6 +390,14 @@ def run(argv: list[str]) -> int:
     elif c == "runs":
         print(runs_text(lab, a.n))
     elif c == "budget":
+        if a.new:
+            human_only(role, "budget --new")
+            used = Ledger(board).new_period(role)
+            if used is None:
+                print("Nothing has been spent in this budget period, so it goes on.")
+            else:
+                boards.commit(board, f"ledger: a new budget period (the last one used {used:.1f} GPU min)")
+                print(f"A new budget period starts: the count is back at zero. The one that ends used {used:.1f} GPU min.")
         print(budget_text(lab))
     elif c == "stop":
         human_only(role, c)
