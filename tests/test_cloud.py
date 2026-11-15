@@ -116,3 +116,6 @@ def test_job_bodies_run_locally(tmp_path, monkeypatch):
 
     again = cloud.evaluate_job.local("r1", 6, "")
     assert again["steps"] == summary["steps"] and "gpu min" in again
+
+    with pytest.raises(FileExistsError, match="never overwritten"):  # a finished run is not trained over
+        cloud.train_job.local("r1", "tiny", f"--steps 4 {tiny}", 6, "", 0.0)

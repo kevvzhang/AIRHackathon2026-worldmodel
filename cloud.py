@@ -109,6 +109,8 @@ def train_job(name: str, data: str = "basic64", args: str = "", horizon: int = 1
 
     started = time.time()
     run = VOL / "runs" / name
+    if (run / "ckpt.pt").exists():
+        raise FileExistsError(f"runs/{name} already holds a trained model; a run is never overwritten, so choose a new name")
     limit = ["--max-minutes", f"{0.8 * minutes:g}"] if minutes else []
     with tagged(name):
         trainer.main(["--data", str(VOL / "data" / data), "--out", str(run), *limit, *shlex.split(args)])

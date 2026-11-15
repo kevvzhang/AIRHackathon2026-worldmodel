@@ -26,6 +26,9 @@ in its own terminal tab, working in its own git worktree and waking itself with 
     uv run python -m lab go             # lift the stop; then launch again
     .\lab\launch.ps1 -Roles train       # start or restart a single agent (add -Continue to keep its conversation)
 
+    uv run python -m lab snapshot <name>   # name the lab as it is now (the trunk's code and the board)
+    uv run python -m lab restore <name>    # go back to a snapshot (stop the lab first)
+
 The first time an agent starts in its worktree, Claude Code may ask whether you trust the
 folder. The laptop has to stay awake: a sleeping machine runs nothing, and a cloud job whose
 terminal went away is stopped.
@@ -56,6 +59,27 @@ Agents never touch `main` or this checkout. They publish to the branch `lab-trun
 their work: `git merge lab-trunk` here. To give them a change you made on `main`:
 `git merge lab-trunk`, then `git branch -f lab-trunk main` (never check `lab-trunk` out; nothing
 should hold it).
+
+## Going back
+
+A snapshot is two git tags, `snapshot/<name>/code` on the trunk and `snapshot/<name>/board` on
+the board. The state before the first launch is the snapshot `prelaunch`.
+
+    uv run python -m lab stop
+    uv run python -m lab restore prelaunch
+    uv run python -m lab go
+
+`restore` puts the trunk, the three agent branches and the board back to the snapshot. Nothing
+is thrown away: whatever you are leaving, uncommitted work in the agents' worktrees included, is
+first tagged `kept/<time>/trunk`, `/eval`, `/data`, `/train` and `/board`. Three things are never
+rewound:
+
+- the ledger: GPU minutes already spent stay spent;
+- `main`: agents never change it, so it is the pre-launch code for as long as you do not merge
+  `lab-trunk` into it (if you did, `git reset --hard snapshot/prelaunch/code` on `main` undoes it);
+- the cloud volume: runs and datasets made since stay there. They are only ever added: a
+  training run refuses a name that already holds a model, and a dataset is never regenerated
+  under an existing name.
 
 ## What a run goes through
 

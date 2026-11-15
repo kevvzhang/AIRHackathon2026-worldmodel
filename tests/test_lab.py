@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 
 from lab import board as boards
-from lab import cli, guard, jobs, scores
+from lab import cli, guard, jobs, scores, snapshots
 from lab.budget import Ledger, Limits, Refused
-from lab.paths import TRUNK, Lab, LabError, git, locked
+from lab.paths import ROLES, TRUNK, Lab, LabError, git, locked
 from lab.setup import agent_settings, setup
 
 LIMITS = "gpu_minutes_total = 60\ngpu_minutes_per_run = 20\nmax_concurrent_gpu_runs = 2\n"
@@ -228,6 +228,7 @@ def repo(tmp_path, monkeypatch):
     (home / "sandwm" / "models.py").write_text("WIDTH = 192\n")
     (home / "sandwm" / "sim.py").write_text("GRAVITY = 1\n")
     (home / "cloud.py").write_text("# cloud\n")
+    (home / ".gitignore").write_text(".lab/\n.claude/settings.local.json\n/runs/\n")
     git("init", "-q", "-b", "main", cwd=home)
     for key, value in (("user.name", "Tester"), ("user.email", "tester@example.invalid"), ("core.autocrlf", "false")):
         git("config", key, value, cwd=home)
@@ -394,6 +395,65 @@ def test_booking_through_the_lab_keeps_the_ledger_and_tags_the_code(repo):
         jobs.book([{"run": "r0003"}], cwd=train)
     with pytest.raises(Refused):
         jobs.record("generate", cwd=train, dataset="x")
+
+
+def test_snapshot_and_restore(repo, monkeypatch, capsys):
+    train, data = repo.worktree("train"), repo.worktree("data")
+    start, main = git("rev-parse", TRUNK, cwd=repo.home), git("rev-parse", "main", cwd=repo.home)
+    monkeypatch.chdir(repo.home)
+    assert cli.main(["snapshot", "pre"]) == 0 and "snapshot pre: code at" in capsys.readouterr().out
+    with pytest.raises(LabError, match="already exists"):
+        snapshots.take(repo, "pre")
+
+    # the lab gets messy: published code, uncommitted and untracked work, a rewritten gap list, messages, spending
+    commit_in(train, "sandwm/models.py", "WIDTH = 7\n", "[train] an idea")
+    cli.publish(repo, train, "train")
+    (data / "sandwm" / "sim.py").write_text("GRAVITY = -1\n")
+    (data / "notes.txt").write_text("half an idea")
+    (data / "runs").mkdir()
+    (data / "runs" / "scratch.bin").write_text("ignored scratch")
+    boards.send(repo.board, "train", "eval", "run ready")
+    boards.note(repo.board, "train", "did things")
+    (repo.board / "gaps.md").write_text("# everything is fine\n", encoding="utf-8")
+    (job,) = Ledger(repo.board).reserve([{"run": "r0001"}], minutes=5)
+    Ledger(repo.board).settle(job, 3, "ok")
+    (repo.board / "limits.toml").write_text(LIMITS)  # the human also changed the budget meanwhile
+
+    with pytest.raises(LabError, match="no snapshot called nope"):
+        snapshots.restore(repo, "nope")
+    with pytest.raises(LabError, match="stop the lab first"):
+        snapshots.restore(repo, "pre")
+    (repo.board / "STOP").write_text("stop")
+    assert cli.main(["restore", "pre"]) == 0
+    out = capsys.readouterr().out
+    assert "kept the state you are leaving" in out and "the ledger is kept: 3.0 of 300" in out
+
+    assert git("rev-parse", TRUNK, cwd=repo.home) == start and git("rev-parse", "main", cwd=repo.home) == main
+    for role in ROLES:
+        tree = repo.worktree(role)
+        assert git("rev-parse", "HEAD", cwd=tree) == start and git("status", "--porcelain", cwd=tree) == ""
+        assert (tree / "sandwm" / "models.py").read_text() == "WIDTH = 192\n" and cli.current_role(tree) == role
+        assert json.loads((tree / ".claude" / "settings.local.json").read_text())["env"]["LAB_ROLE"] == role
+    assert not (data / "notes.txt").exists() and (data / "sandwm" / "sim.py").read_text() == "GRAVITY = 1\n"
+    assert (data / "runs" / "scratch.bin").exists(), "ignored scratch files are left alone"
+
+    assert boards.unread(repo.board, "eval") == [] and boards.last_note(repo.board, "train") == ""
+    assert len(boards.gaps(repo.board)) >= 5 and Ledger(repo.board).limits.gpu_minutes_total == 300
+    assert Ledger(repo.board).spent() == 3, "money already spent stays spent"
+    assert (repo.board / "STOP").exists() and git("status", "--porcelain", cwd=repo.board) == ""
+    assert "restored snapshot pre" in git("log", "-1", "--format=%s", cwd=repo.board)
+
+    kept = git("tag", "--list", "kept/*", cwd=repo.home).split()
+    assert sorted(t.rsplit("/", 1)[1] for t in kept) == ["board", "data", "eval", "train", "trunk"]
+    tag = {t.rsplit("/", 1)[1]: t for t in kept}
+    assert git("show", f"{tag['data']}:notes.txt", cwd=repo.home) == "half an idea"
+    assert "GRAVITY = -1" in git("show", f"{tag['data']}:sandwm/sim.py", cwd=repo.home)
+    assert "WIDTH = 7" in git("show", f"{tag['trunk']}:sandwm/models.py", cwd=repo.home)
+    assert "everything is fine" in git("show", f"{tag['board']}:gaps.md", cwd=repo.home)
+    assert "run ready" in git("ls-tree", "-r", "--name-only", tag["board"], cwd=repo.home).replace("-", " ")
+
+    monkeypatch.setenv("LAB_ROLE", "train")
+    assert cli.main(["restore", "pre"]) == 1 and "for the human" in capsys.readouterr().err
 
 
 def test_no_lab_means_no_bookkeeping(tmp_path):

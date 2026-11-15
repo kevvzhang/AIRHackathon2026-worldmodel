@@ -21,6 +21,8 @@ For the human only:
     setup                          create the board, the trunk and the three worktrees (safe to repeat)
     stop [--keep-cloud]            stop every agent at its next tool call, and the lab's cloud jobs
     go                             lift the stop, so that agents can be started again
+    snapshot NAME                  name the lab as it is now (the trunk's code and the board)
+    restore NAME                   go back to a snapshot; what you leave is kept under kept/<time>/... tags
 """
 
 from __future__ import annotations
@@ -298,6 +300,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-bench", action="store_true", help="do not generate the benchmark dataset")
     sub.add_parser("stop").add_argument("--keep-cloud", action="store_true", help="let cloud jobs that are running finish")
     sub.add_parser("go")
+    sub.add_parser("snapshot").add_argument("name")
+    sub.add_parser("restore").add_argument("name")
     return p
 
 
@@ -368,6 +372,14 @@ def run(argv: list[str]) -> int:
         human_only(role, c)
         (board / "STOP").unlink(missing_ok=True)
         print("STOP is lifted.  Start the agents again with  lab\\launch.ps1")
+    elif c in ("snapshot", "restore"):
+        human_only(role, c)
+        from . import snapshots
+
+        if c == "snapshot":
+            print(snapshots.take(lab, check_name(a.name)))
+        else:
+            print("\n".join(snapshots.restore(lab, check_name(a.name))))
     return 0
 
 
