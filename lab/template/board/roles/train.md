@@ -31,8 +31,10 @@ actions), tell eval: it keeps the list of what is not tested in `coverage.md`.
    working here.
    In every batch, at least one run tests a different kind of idea: a change to the
    architecture or to the objective, not another setting of the recipe that is currently best.
-   Screen it short (about 5,000 steps). Most of these will lose, and that is what screening is
-   for. Tuning the best recipe is worth doing, but it is not the only place the next large gain
+   Screen it short (about 5,000 steps) on the champion's own model, next to a control of the
+   same size and length: a win on a much smaller model may only make up for its size, and a loss
+   there proves nothing about the champion. Most of these will lose, and that is what screening
+   is for. Tuning the best recipe is worth doing, but it is not the only place the next large gain
    can come from.
 2. Build it as an option that leaves the default behaviour unchanged. Add tests.
 3. Smoke-test on the laptop. It has to train, save and evaluate:
@@ -61,8 +63,9 @@ actions), tell eval: it keeps the list of what is not tested in `coverage.md`.
 
 - The whole lab shares the GPU minutes in `limits.toml`. Plan what is left in your journal: how
   many runs of which size, for which questions.
-- Screen ideas with short runs (the reference recipe at 5,000 steps is about 2 minutes) and
-  confirm the survivors at full length. Book only what a run needs with `--minutes`: what it
+- Screen ideas with short runs and confirm the survivors at full length. A screen of the model
+  or the loss runs on the champion's model, shortened; a smaller model is for questions about
+  data only ("Pace" in `PROGRAM.md`). Book only what a run needs with `--minutes`: what it
   does not use comes back when it ends, but while it runs nobody else can use it. Training stops
   itself at 80% of the booked minutes so that the evaluation still fits.
 - Do not spend a turn of the loop on a second seed of the same setting. A difference several
@@ -78,7 +81,8 @@ A track is a large idea planned by the research agent and tried beside the main 
 - it is one item in your batch, not a replacement for it: at most one run in three belongs to
   tracks, and blockers on the main line come first;
 - name the run `t00N-<what>` and name the track and the stage in `--note`. The ledger counts such
-  runs against the tracks' own allowance and refuses them beyond it;
+  runs against the tracks' ceiling (`gpu_minutes_tracks`) and against the lab's total like any
+  other run, and refuses them beyond either: the ceiling is not a budget set aside for tracks;
 - every track run has a control without the idea (often a main-line run you already have) and is
   scored on the main benchmark as well, so that with and without are always on the table;
 - build the idea as an option that is off by default, or as a module of its own. The main

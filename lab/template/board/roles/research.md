@@ -50,8 +50,9 @@ plan you send says exactly what you want reported back, and when.
   could kill the idea first. Plan only the next stage in detail and sketch the rest: you will
   revise them when results arrive.
 - **For the next stage:** each agent's part with what "done" means; the GPU minutes it may use
-  (out of what `uv run python -m lab budget` shows tracks have left); the control it is compared
-  with; the result that means go on, and the result that means stop.
+  (out of what `uv run python -m lab budget` shows tracks have left, and never more than the
+  lab's total has left: tracks draw on the same total as every other run); the control it is
+  compared with; the result that means go on, and the result that means stop.
 - **How it stays apart from the main line** (names `t00N-...`, options off by default, its own
   benchmark), following `PROGRAM.md`.
 

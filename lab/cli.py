@@ -102,7 +102,8 @@ def budget_text(lab: Lab) -> str:
     return (f"GPU minutes: {s['spent']:.1f} spent or booked of {s['total']:g}  ({max(s['total'] - s['spent'], 0):.1f} left)\n"
             f"limits: one job <= {s['per_run']:g} min, <= {s['concurrent']} at once\n"
             f"running: {running}\nby agent: {by}\n"
-            f"research tracks: {sum(s['tracks'].values()):.1f} of the {s['tracks_cap']:g} min they may use together ({on_tracks})")
+            f"research tracks: {sum(s['tracks'].values()):.1f} of the {s['tracks_cap']:g} min they may use together "
+            f"({on_tracks}); that ceiling is inside the total above, not on top of it")
 
 
 def status_text(lab: Lab, role: str) -> str:
@@ -145,7 +146,8 @@ def status_text(lab: Lab, role: str) -> str:
     side = boards.tracks(board)
     if side:
         active = ", ".join(f"{t['id']} {t['title']}" for t in side if t["status"] == "active") or "none"
-        lines.append(f"tracks    {len(side)} listed; active: {active}; GPU min used {sum(s['tracks'].values()):.1f} of {s['tracks_cap']:g}")
+        lines.append(f"tracks    {len(side)} listed; active: {active}; GPU min used {sum(s['tracks'].values()):.1f} of {s['tracks_cap']:g}"
+                     " (a ceiling inside the budget above, not extra)")
     lines.append("runs      " + runs_text(lab, 5).replace("\n", "\n          "))
     mine = boards.unread(board, role)
     if mine:

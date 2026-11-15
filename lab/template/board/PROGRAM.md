@@ -91,7 +91,12 @@ carefully it retests one.
   start when a slot frees up. Eval reports every gap it sees in a run, not only the worst, so
   that data and train can work on different gaps at the same time.
 - **Screen short, confirm long.** Most ideas can be judged from a short run or a small dataset.
-  Only what survives screening gets a full-length run.
+  Only what survives screening gets a full-length run. Screen on the model the answer is for:
+  an idea about the model or its loss is screened on the champion's own model at short length,
+  next to a control of the same size and length. On a model several times smaller an idea can
+  win just by making up for the size, and one that loses there has not been tested. A smaller
+  model is a fair stand-in for questions about data only, and what wins is still confirmed at
+  the champion's size.
 - **Do not wait for each other.** Hand over what you have as soon as it is usable and start the
   next thing. A quick verdict from the scorecard numbers now is worth more than a thorough one
   later; the thorough look is for runs that could become champion.
@@ -179,7 +184,9 @@ agent, as a **track**.
   and the feature in flight keep at least two thirds of every agent's work and of every batch,
   and blockers and regressions on the main line come before any track. `limits.toml` sets the
   GPU minutes all tracks together may use (`gpu_minutes_tracks`), and the ledger refuses a track
-  run beyond it. At most two tracks are active at once.
+  run beyond it. That number is a ceiling inside the lab's one total, not minutes set aside: a
+  track run needs room in `gpu_minutes_total` like any other run, and once the total is spent
+  nothing starts, track or not. At most two tracks are active at once.
 - **Kept apart.** Track runs are named `t00N-<what>` (main-line runs stay `r....`), track
   datasets `t00N-...`, track benchmarks `bench-t00N-...`. Code for a track is an option that is off
   by default, or a module of its own, so the main recipe behaves exactly as before. Every track

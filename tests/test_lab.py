@@ -507,6 +507,18 @@ def test_tracks_have_a_budget_of_their_own(board):
     ledger.settle(c, 10, "ok")
 
 
+def test_tracks_draw_on_the_same_total_as_everything_else(board):
+    (board / "limits.toml").write_text(LIMITS + "gpu_minutes_tracks = 30\n")  # the total is 60
+    ledger = Ledger(board)
+    for name, minutes in (("r0001-main", 20), ("r0002-main", 20), ("r0003-main", 15)):
+        (job,) = ledger.reserve([{"run": name}], minutes=minutes)
+        ledger.settle(job, minutes, "ok")
+    with pytest.raises(Refused, match="GPU budget"):  # 5 left of the total, though tracks have used none of their 30
+        ledger.reserve([{"run": "t001-first"}], minutes=10)
+    ledger.reserve([{"run": "t001-first"}], minutes=5)
+    assert ledger.summary()["tracks_cap"] == 30 and ledger.summary()["spent"] == 60
+
+
 def test_track_list_is_read_from_the_board(board):
     assert boards.tracks(board) == []
     (board / "tracks.md").write_text("# Tracks\n    ### T-009 | an example in the header | active\n"
