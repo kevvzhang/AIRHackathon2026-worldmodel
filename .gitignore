@@ -4,8 +4,8 @@ __pycache__/
 .pytest_cache/
 
 # generated artefacts (re-creatable from the commands in README.md)
-data/
-runs/
+/data/
+/runs/
 
 # the agent lab: worktrees, board and fetched results live here (see lab/README.md)
 .lab/
