@@ -109,7 +109,7 @@ def train_job(name: str, data: str = "basic64", args: str = "", horizon: int = 1
 
     started = time.time()
     run = VOL / "runs" / name
-    limit = ["--max-minutes", f"{0.8 * minutes:.2f}"] if minutes else []
+    limit = ["--max-minutes", f"{0.8 * minutes:g}"] if minutes else []
     with tagged(name):
         trainer.main(["--data", str(VOL / "data" / data), "--out", str(run), *limit, *shlex.split(args)])
         volume.commit()  # the checkpoint is safe even if the evaluation fails

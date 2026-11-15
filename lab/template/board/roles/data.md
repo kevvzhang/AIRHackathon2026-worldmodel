@@ -34,7 +34,8 @@ dataset is good if a model trained on it is wrong less often.
 ## How a dataset is made
 
 1. Prototype on the laptop with a few dozen episodes:
-   `uv run python -m sandwm.generate --out <a scratch folder> --episodes 32 --val-episodes 8 ...`
+   `uv run python -m sandwm.generate --out data\scratch-1 --episodes 32 --val-episodes 8 ...`
+   (`data\` and `runs\` at the top of your worktree are ignored by git: use them for scratch files.)
    Then look at its `preview.png` with the Read tool. A dataset nobody has looked at is not
    finished.
 2. Tests. Every change to the simulator keeps `uv run pytest` green and adds tests for what it

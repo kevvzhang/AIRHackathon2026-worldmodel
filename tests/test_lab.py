@@ -349,6 +349,31 @@ def test_cloud_jobs_need_published_committed_code(repo, monkeypatch):
     assert cli.generate(repo, train, "data", bench, ["--episodes", "0", "--seed", "9002"]) == 0
 
 
+def test_fetch_merges_into_what_is_already_there(repo, monkeypatch):
+    def fake_download(cmd, cwd=None):  # `modal volume get sandwm runs/r1 <folder>` puts the run in <folder>/r1
+        assert cmd[:5] == ["uv", "run", "modal", "volume", "get"] and cmd[6] == "runs/r1"
+        (Path(cmd[-1]) / "r1" / "eval").mkdir(parents=True)
+        (Path(cmd[-1]) / "r1" / "ckpt.pt").write_text("weights")
+        (Path(cmd[-1]) / "r1" / "eval" / "metrics.json").write_text("from the volume")
+        return 0
+
+    monkeypatch.setattr(cli, "sh", fake_download)
+    assert cli.fetch(repo, "r1") == 0
+    run = repo.runs / "r1"
+    assert (run / "ckpt.pt").read_text() == "weights"
+    (run / "eval" / "scorecard.json").write_text("scored on the laptop")
+    (run / "eval" / "metrics.json").write_text("edited here")
+    monkeypatch.setattr(cli, "sh", lambda cmd, cwd=None: pytest.fail("must not download what is already here"))
+    assert cli.fetch(repo, "r1") == 0
+    monkeypatch.setattr(cli, "sh", fake_download)
+    assert cli.fetch(repo, "r1", again=True) == 0
+    assert (run / "eval" / "scorecard.json").read_text() == "scored on the laptop", "local-only files survive"
+    assert (run / "eval" / "metrics.json").read_text() == "from the volume"
+    assert not list(repo.state.glob("fetch-*")), "the temporary download folder is removed"
+    monkeypatch.setattr(cli, "sh", lambda cmd, cwd=None: 1)
+    assert cli.fetch(repo, "missing") == 1 and not (repo.runs / "missing").exists()
+
+
 def test_booking_through_the_lab_keeps_the_ledger_and_tags_the_code(repo):
     train = repo.worktree("train")
     assert jobs.find(train).home == repo.home and jobs.limits(train).gpu_minutes_per_run == 20

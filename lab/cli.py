@@ -12,7 +12,7 @@ Agents run these from their own worktree, the human from the main checkout.
     publish                        merge the trunk, run the tests, move the trunk to your commit
     train NAME --data D -- ARGS    train on a cloud GPU within the budget, score it on the benchmark, fetch the results
     generate NAME -- ARGS          simulate a dataset in the cloud
-    fetch NAME [--data]            copy a run (or a dataset) from the cloud volume into the shared folder
+    fetch NAME [--data] [--again]  copy a run (or a dataset) from the cloud volume into the shared folder
     runs                           what has been run, what it cost, how it scored
     budget                         GPU minutes spent, booked and left
 
@@ -29,8 +29,10 @@ import argparse
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import board as boards
@@ -191,11 +193,25 @@ def ready_to_ship(cwd: Path, role: str) -> None:
                        "(cloud jobs run published code, so that the others can load what they produce)")
 
 
-def fetch(lab: Lab, name: str, kind: str = "runs") -> int:
-    """Copy runs/<name> or data/<name> from the cloud volume into the lab's shared folder."""
-    target = lab.runs if kind == "runs" else lab.datasets
-    target.mkdir(parents=True, exist_ok=True)
-    return sh(["uv", "run", "modal", "volume", "get", "--force", VOLUME, f"{kind}/{name}", str(target)], cwd=Path.cwd())
+def fetch(lab: Lab, name: str, kind: str = "runs", again: bool = False) -> int:
+    """Copy runs/<name> or data/<name> from the cloud volume into the lab's shared folder.
+
+    The download is merged into what is already there: files that exist only locally (a scorecard
+    computed on the laptop, notes) are kept, files that exist in both are replaced by the volume's.
+    """
+    target = (lab.runs if kind == "runs" else lab.datasets) / name
+    if target.exists() and not again:
+        print(f"already here: {target}   (--again downloads it again and keeps files that exist only here)")
+        return 0
+    lab.state.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=lab.state, prefix="fetch-") as tmp:
+        code = sh(["uv", "run", "modal", "volume", "get", VOLUME, f"{kind}/{name}", tmp], cwd=Path.cwd())
+        got = Path(tmp) / name if (Path(tmp) / name).is_dir() else Path(tmp)
+        if code or not any(got.iterdir()):
+            print(f"could not fetch {kind}/{name} from the volume")
+            return code or 1
+        shutil.copytree(got, target, dirs_exist_ok=True)
+    return 0
 
 
 def train(lab: Lab, cwd: Path, role: str, a, rest: list[str]) -> int:
@@ -274,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser("fetch")
     f.add_argument("name")
     f.add_argument("--data", action="store_true", help="fetch a dataset instead of a run")
+    f.add_argument("--again", action="store_true", help="download it even if it is already here")
     sub.add_parser("runs").add_argument("-n", type=int, default=25)
     sub.add_parser("budget")
     s = sub.add_parser("setup")
@@ -334,7 +351,7 @@ def run(argv: list[str]) -> int:
     elif c == "generate":
         return generate(lab, cwd, role, a, rest)
     elif c == "fetch":
-        return fetch(lab, check_name(a.name), "data" if a.data else "runs")
+        return fetch(lab, check_name(a.name), "data" if a.data else "runs", a.again)
     elif c == "runs":
         print(runs_text(lab, a.n))
     elif c == "budget":

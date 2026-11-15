@@ -85,3 +85,34 @@ def test_launch_does_not_start_what_the_budget_refuses(monkeypatch):
     with pytest.raises(SystemExit, match="not started: GPU budget"):
         cloud.launch(job, ["a"], [("a",)], "train", 0.0, [{"run": "a"}])
     assert job.calls is None, "nothing may reach the cloud after a refusal"
+
+
+@pytest.mark.filterwarnings("ignore:The .* function is executing locally")
+def test_job_bodies_run_locally(tmp_path, monkeypatch):
+    """What runs in the cloud container, run here instead: generate -> train -> evaluate -> scorecard on a "volume"."""
+    import cloud
+
+    class Volume:
+        commits = 0
+
+        def commit(self):
+            Volume.commits += 1
+
+    monkeypatch.setattr(cloud, "VOL", tmp_path)
+    monkeypatch.setattr(cloud, "volume", Volume())
+    shape = "--steps 32 --size 32"
+    cloud.generate_job.local("tiny", f"--episodes 16 --val-episodes 4 {shape}")
+    cloud.generate_job.local("bench-tiny", f"--episodes 0 --val-episodes 6 --seed 9001 {shape}")
+    cloud.generate_job.local("tiny", "--episodes 999")  # already there: left alone
+    assert (tmp_path / "data" / "tiny" / "meta.json").exists() and Volume.commits == 2
+
+    tiny = "--batch 8 --frame-skip 2 --eval-every 2 --log-every 1 --num-proj 32 --threads 2 --model embed_dim=32 proj_hidden=64 pred_depth=2"
+    summary = cloud.train_job.local("r1", "tiny", f"--steps 400 {tiny}", 6, "bench-tiny", 0.004)
+    assert summary["gpu"] == "cpu" and summary["gpu min"] >= 0 and summary["skip"] == 2
+    assert 1 <= summary["steps"] < 400, "training must have stopped at 80% of the booked minutes"
+    run = tmp_path / "runs" / "r1"
+    for name in ("ckpt.pt", "metrics.jsonl", "eval/metrics.json", "eval/scorecard.json", "eval/bench/fixed-1.png"):
+        assert (run / name).exists(), name
+
+    again = cloud.evaluate_job.local("r1", 6, "")
+    assert again["steps"] == summary["steps"] and "gpu min" in again

@@ -96,6 +96,11 @@ more of the same.
 - Keep `gaps.md` truthful: retest old gaps on the current champion.
 - Improve the pictures and the tools you look with.
 
+## Scratch files
+
+`runs\` and `data\` at the top of your worktree are ignored by git: put probe scripts' output
+and other scratch files there. Probe scripts worth keeping go under `sandwm\` with a test.
+
 ## Not yours
 
 Launching training runs. Editing the world or the model. Declaring a gap fixed without the run

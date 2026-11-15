@@ -25,7 +25,8 @@ without opening others.
    dynamics/changed@16".
 2. Build it as an option that leaves the default behaviour unchanged. Add tests.
 3. Smoke-test on the laptop. It has to train, save and evaluate:
-   `uv run python -m sandwm.train --data {{HOME}}\data\basic64 --out <a scratch folder> --steps 4 --batch 8 --threads 2 ...`
+   `uv run python -m sandwm.train --data {{HOME}}\data\basic64 --out runs\smoke --steps 4 --batch 8 --threads 2 ...`
+   (`runs\` and `data\` at the top of your worktree are ignored by git: use them for scratch files.)
 4. `uv run python -m lab publish`
 5. Check what is left (`uv run python -m lab budget`), then start the run as a background command:
    `uv run python -m lab train <name> --data <dataset> --minutes <n> --note "<the hypothesis>" -- <train args>`

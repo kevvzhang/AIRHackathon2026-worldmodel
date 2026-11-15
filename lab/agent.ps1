@@ -15,7 +15,9 @@ param(
     [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')][string]$Effort = 'xhigh',
     [ValidateSet('auto', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions')][string]$PermissionMode = 'auto',
     [switch]$Continue,
-    [switch]$DryRun
+    [switch]$DryRun,
+    # For testing this script: the program to start in place of claude, followed by arguments to put first.
+    [string[]]$Program = @('claude')
 )
 $ErrorActionPreference = 'Stop'
 
@@ -72,4 +74,6 @@ $env:PYTHONUNBUFFERED = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 Set-Location $tree
 $Host.UI.RawUI.WindowTitle = "lab-$Role"
-& claude @claudeArgs
+$exe = $Program[0]
+$all = @($Program | Select-Object -Skip 1) + $claudeArgs
+& $exe @all
