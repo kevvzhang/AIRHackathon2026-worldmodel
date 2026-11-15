@@ -72,26 +72,36 @@ def rollout_eval(model, decoder, ds, n_windows: int, horizon: int, frame_skip: i
     future, last = emb[:, C:], emb[:, C - 1 : C]
     true, last_grid = frames[:, C:], frames[:, C - 1 : C]
     grid_imagined, grid_recon = decode(decoder, imagined), decode(decoder, future)
+    grid_frozen = decode(decoder, last)[:, 0]  # what the decoder shows if the latent state never moves
     changed = true != last_grid  # cells that differ from the last context frame: where the dynamics are
 
     def per_step(fn):
         return [float(fn(h)) for h in range(horizon)]
 
+    def on_changed(grid):  # accuracy restricted to the cells that changed
+        return per_step(lambda h: (grid[:, h] == true[:, h])[changed[:, h]].mean())
+
+    # Keys (see LABELS):  model = open-loop imagination;  copy / frozen = "nothing changes" in latent
+    # space, i.e. the baseline a world model has to beat;  ceiling = encode+decode of the TRUE future
+    # frame, i.e. the best this latent and decoder could show;  pixel_copy = repeating the last true
+    # frame, which is not limited by the latent at all.
     metrics = {
         "horizon": list(range(1, horizon + 1)),
         "latent_mse": {
             "model": per_step(lambda h: (imagined[:, h] - future[:, h]).square().mean()),
-            "copy-last baseline": per_step(lambda h: (last[:, 0] - future[:, h]).square().mean()),
-            "model, actions hidden": per_step(lambda h: (imagined_idle[:, h] - future[:, h]).square().mean()),
+            "copy": per_step(lambda h: (last[:, 0] - future[:, h]).square().mean()),
+            "no_action": per_step(lambda h: (imagined_idle[:, h] - future[:, h]).square().mean()),
         },
         "miou": {
-            "model (imagined)": per_step(lambda h: miou(grid_imagined[:, h], true[:, h], K)),
-            "copy-last baseline": per_step(lambda h: miou(last_grid[:, 0], true[:, h], K)),
-            "encode+decode of the true frame (ceiling)": per_step(lambda h: miou(grid_recon[:, h], true[:, h], K)),
+            "model": per_step(lambda h: miou(grid_imagined[:, h], true[:, h], K)),
+            "frozen": per_step(lambda h: miou(grid_frozen, true[:, h], K)),
+            "ceiling": per_step(lambda h: miou(grid_recon[:, h], true[:, h], K)),
+            "pixel_copy": per_step(lambda h: miou(last_grid[:, 0], true[:, h], K)),
         },
         "changed_cell_accuracy": {
-            "model (imagined)": per_step(lambda h: (grid_imagined[:, h] == true[:, h])[changed[:, h]].mean()),
-            "encode+decode of the true frame (ceiling)": per_step(lambda h: (grid_recon[:, h] == true[:, h])[changed[:, h]].mean()),
+            "model": on_changed(grid_imagined),
+            "frozen": on_changed(np.repeat(grid_frozen[:, None], horizon, axis=1)),
+            "ceiling": on_changed(grid_recon),
         },
         "changed_cell_fraction": per_step(lambda h: changed[:, h].mean()),
     }
@@ -143,6 +153,16 @@ def probe_eval(model, train: EpisodeDataset, val: EpisodeDataset, n_train: int, 
 
 
 # --- 3. report ----------------------------------------------------------------------------------
+LABELS = {
+    "model": "model (open-loop imagination)",
+    "copy": "baseline: latent never changes",
+    "no_action": "model with the actions hidden",
+    "frozen": "baseline: decode(last context embedding)",
+    "ceiling": "ceiling: decode(encode(true future frame))",
+    "pixel_copy": "repeat the last true frame (not limited by the latent)",
+}
+
+
 def plot_rollout(metrics: dict, path: Path, title: str) -> None:
     import matplotlib
 
@@ -155,8 +175,8 @@ def plot_rollout(metrics: dict, path: Path, title: str) -> None:
               ("miou", "decoded mIoU over materials (higher is better)", False),
               ("changed_cell_accuracy", "accuracy on cells that changed since the context", False)]
     for a, (key, name, log) in zip(ax, panels):
-        for label, values in metrics[key].items():
-            a.plot(h, values, "o-", ms=3, label=label)
+        for series, values in metrics[key].items():
+            a.plot(h, values, "o-", ms=3, label=LABELS[series])
         a.set(xlabel="imagined steps", title=name, yscale="log" if log else "linear")
         if not log:
             a.set_ylim(0, 1)
@@ -205,14 +225,16 @@ def main(argv=None) -> None:
 
     print(f"\n{title}")
     lm, mi, ch = metrics["latent_mse"], metrics["miou"], metrics["changed_cell_accuracy"]
-    print(f"\n  {'steps':>5} | {'latent MSE':^31} | {'decoded mIoU':^27} | changed-cell accuracy")
-    print(f"  {'':>5} | {'model':>8} {'copy':>8} {'no-action':>12} | {'model':>7} {'copy':>7} {'ceiling':>9} | {'model':>7} {'ceiling':>8} {'(% cells)':>10}")
+    print("  model = imagination | frozen = latent state never changes (the baseline to beat) | ceiling = encode+decode")
+    print("  of the true future frame (the most this latent can show) | pixel = repeat the last true frame")
+    print(f"\n  {'steps':>5} | {'latent MSE':^29} | {'decoded mIoU':^31} | {'accuracy on changed cells':^34}")
+    print(f"  {'':>5} | {'model':>8} {'frozen':>8} {'no-action':>11} | {'model':>7} {'frozen':>7} {'ceiling':>7} {'pixel':>7} | "
+          f"{'model':>7} {'frozen':>7} {'ceiling':>7} {'(% cells)':>10}")
     for i, h in enumerate(metrics["horizon"]):
         if h in (1, 2, 4, 8, 12, 16, 24, 32) or h == horizon:
-            print(f"  {h:5d} | {lm['model'][i]:8.4f} {lm['copy-last baseline'][i]:8.4f} {lm['model, actions hidden'][i]:12.4f} | "
-                  f"{mi['model (imagined)'][i]:7.3f} {mi['copy-last baseline'][i]:7.3f} "
-                  f"{mi['encode+decode of the true frame (ceiling)'][i]:9.3f} | {ch['model (imagined)'][i]:7.3f} "
-                  f"{ch['encode+decode of the true frame (ceiling)'][i]:8.3f} {100 * metrics['changed_cell_fraction'][i]:9.1f}%")
+            print(f"  {h:5d} | {lm['model'][i]:8.4f} {lm['copy'][i]:8.4f} {lm['no_action'][i]:11.4f} | "
+                  f"{mi['model'][i]:7.3f} {mi['frozen'][i]:7.3f} {mi['ceiling'][i]:7.3f} {mi['pixel_copy'][i]:7.3f} | "
+                  f"{ch['model'][i]:7.3f} {ch['frozen'][i]:7.3f} {ch['ceiling'][i]:7.3f} {100 * metrics['changed_cell_fraction'][i]:9.1f}%")
     print("\n  linear probes, R^2 on validation frames (1 = perfectly linearly readable from the embedding):")
     for name, r2 in probes.items():
         print(f"    {name:20s} {r2:6.3f}")

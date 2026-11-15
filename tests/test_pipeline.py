@@ -80,7 +80,8 @@ def test_observations_and_action_encoding(dataset_dir):
 def test_train_then_evaluate(dataset_dir, tmp_path, frame_skip):
     run = tmp_path / "run"
     train.main(["--data", str(dataset_dir), "--out", str(run), "--steps", "4", "--batch", "8", "--eval-every", "2",
-                "--log-every", "1", "--num-proj", "32", "--embed-dim", "32", "--frame-skip", str(frame_skip), "--threads", "2"])
+                "--log-every", "1", "--num-proj", "32", "--frame-skip", str(frame_skip), "--threads", "2",
+                "--model", "embed_dim=32", "proj_hidden=64", "pred_depth=2"])
     rows = [json.loads(line) for line in (run / "metrics.jsonl").read_text().splitlines()]
     assert sum("val_pred" in r for r in rows) == 2 and all(np.isfinite(r["pred"]) for r in rows if "pred" in r)
     assert (run / "ckpt.pt").exists() and (run / "curves.png").exists()

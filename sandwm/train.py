@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from .data import EpisodeDataset
-from .models import JEPA, Decoder, ModelConfig, SIGReg, count_params, jepa_loss
+from .models import PRESETS, JEPA, Decoder, ModelConfig, SIGReg, count_params, jepa_loss, parse_overrides
 
 
 def seg_metrics(pred: torch.Tensor, true: torch.Tensor, n_classes: int) -> tuple[float, float]:
@@ -113,11 +113,11 @@ def main(argv=None) -> None:
     p.add_argument("--lambd", type=float, default=0.1, help="weight of the SIGReg term")
     p.add_argument("--num-proj", type=int, default=1024, help="random projections in SIGReg")
     p.add_argument("--frame-skip", type=int, default=1, help="raw frames per latent step; their actions are concatenated")
-    p.add_argument("--history", type=int, default=3)
-    p.add_argument("--embed-dim", type=int, default=192)
-    p.add_argument("--encoder", choices=["cnn", "vit"], default="cnn")
-    p.add_argument("--no-residual", action="store_true",
-                   help="predict the next embedding directly (as in LeWM) instead of the change in embedding")
+    p.add_argument("--preset", choices=sorted(PRESETS), default="cpu",
+                   help="architecture size: 'cpu' = small CNN encoder, 'lewm' = ViT-Tiny + 6-layer predictor as in the paper")
+    p.add_argument("--model", nargs="*", default=[], metavar="KEY=VALUE",
+                   help="override any ModelConfig field, e.g. --model encoder=vit vit_patch=4 pred_residual=false")
+    p.add_argument("--no-amp", action="store_true", help="disable bfloat16 mixed precision on GPU")
     p.add_argument("--decoder-batch", type=int, default=64, help="frames per step used to train the probe decoder")
     p.add_argument("--max-episodes", type=int, default=None, help="use only the first N training episodes")
     p.add_argument("--eval-every", type=int, default=250)
@@ -136,10 +136,12 @@ def main(argv=None) -> None:
 
     train = EpisodeDataset(args.data, "train", args.max_episodes)
     val = EpisodeDataset(args.data, "val")
-    cfg = ModelConfig(image_size=train.size, action_dim=train.action_dim * args.frame_skip, n_classes=len(train.materials),
-                      embed_dim=args.embed_dim, history=args.history, encoder=args.encoder,
-                      pred_residual=not args.no_residual)
+    cfg = ModelConfig(**{**PRESETS[args.preset], **parse_overrides(args.model), "image_size": train.size,
+                         "action_dim": train.action_dim * args.frame_skip, "n_classes": len(train.materials)})
     model, decoder = JEPA(cfg).to(device), Decoder(cfg).to(device)
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = True
+        model.amp = not args.no_amp and torch.cuda.is_bf16_supported()
     sigreg = SIGReg(args.num_proj).to(device)
     opt = torch.optim.AdamW([
         {"params": model.parameters(), "lr": args.lr, "weight_decay": args.weight_decay},
@@ -148,7 +150,7 @@ def main(argv=None) -> None:
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / max(1, args.warmup)) * (
         0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * min(1.0, s / max(1, args.steps))))))
 
-    n_frames = args.history + 1
+    n_frames = cfg.history + 1
     vf, va = val.sample(256, n_frames, args.frame_skip, np.random.default_rng(1234))
     val_obs, val_act = val.observe(vf, device), val.encode_actions(va, device)
     val_grid = torch.from_numpy(vf).long().to(device)
@@ -157,7 +159,10 @@ def main(argv=None) -> None:
           f"materials={train.materials.name}")
     print(f"model: encoder {count_params(model.encoder) + count_params(model.projector):,} | predictor "
           f"{count_params(model.predictor) + count_params(model.pred_proj) + count_params(model.action_encoder):,} | "
-          f"probe decoder {count_params(decoder):,} params | device {device}, {torch.get_num_threads()} threads")
+          f"probe decoder {count_params(decoder):,} params")
+    where = f"{torch.cuda.get_device_name()}, bfloat16 {'on' if model.amp else 'off'}" if device.type == "cuda" else f"{torch.get_num_threads()} CPU threads"
+    print(f"config: preset {args.preset}, encoder {cfg.encoder}, frame skip {args.frame_skip}, history {cfg.history}, "
+          f"residual prediction {cfg.pred_residual} | {where}", flush=True)
 
     def save(step: int) -> None:
         torch.save({"model": model.state_dict(), "decoder": decoder.state_dict(), "config": cfg.to_dict(), "step": step,

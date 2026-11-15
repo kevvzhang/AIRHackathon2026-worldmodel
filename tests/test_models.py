@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from sandwm.models import JEPA, Decoder, ModelConfig, SIGReg, jepa_loss
+from sandwm.models import PRESETS, JEPA, Decoder, ModelConfig, SIGReg, count_params, jepa_loss, parse_overrides
 
 
 def small_cfg(**kw):
@@ -32,6 +32,19 @@ def test_shapes(encoder):
 def test_config_round_trips_through_a_checkpoint_dict():
     cfg = small_cfg(pred_residual=False)
     assert ModelConfig.from_dict(cfg.to_dict()) == cfg
+
+
+def test_presets_and_overrides():
+    assert parse_overrides(["vit_patch=4", "pred_residual=false", "cnn_channels=8,16", "encoder=vit", "pred_dropout=0.0"]) == dict(
+        vit_patch=4, pred_residual=False, cnn_channels=(8, 16), encoder="vit", pred_dropout=0.0)
+    with pytest.raises(ValueError, match="unknown model option"):
+        parse_overrides(["patch=4"])
+    assert ModelConfig(**PRESETS["cpu"]) == ModelConfig()
+    lewm = JEPA(ModelConfig(**PRESETS["lewm"]))
+    # the paper quotes ~5M parameters for the ViT-Tiny encoder and ~10M for the predictor
+    assert 5.0e6 < count_params(lewm.encoder) < 6.0e6
+    assert 9.0e6 < count_params(lewm.predictor) < 11.0e6
+    assert lewm.encode(torch.randn(2, 1, 3, 64, 64)).shape == (2, 1, 192)
 
 
 def test_predictor_is_causal():

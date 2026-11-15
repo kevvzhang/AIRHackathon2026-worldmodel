@@ -14,7 +14,7 @@ embeddings, purely so that we can look at what the latent state contains.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 
 import torch
 import torch.nn.functional as F
@@ -54,6 +54,33 @@ class ModelConfig:
         for key in ("cnn_channels", "dec_channels"):
             d[key] = tuple(d[key])
         return cls(**d)
+
+
+# Named architecture sizes.  "cpu" is the ModelConfig default.  "lewm" follows the paper: a
+# ViT-Tiny encoder (12 layers, 3 heads, width 192) and a 6-layer, 16-head predictor (~15M params).
+PRESETS: dict[str, dict] = {
+    "cpu": {},
+    "lewm": dict(encoder="vit", vit_dim=192, vit_depth=12, vit_heads=3, proj_hidden=2048,
+                 pred_depth=6, pred_heads=16, pred_dim_head=64, pred_mlp=2048),
+}
+
+
+def parse_overrides(pairs: list[str]) -> dict:
+    """['vit_patch=4', 'pred_residual=false', 'cnn_channels=32,64,128'] -> typed ModelConfig fields."""
+    defaults = {f.name: f.default for f in fields(ModelConfig)}
+    out = {}
+    for pair in pairs:
+        key, _, raw = pair.partition("=")
+        if key not in defaults:
+            raise ValueError(f"unknown model option {key!r}; choose from {sorted(defaults)}")
+        default = defaults[key]
+        if isinstance(default, bool):
+            out[key] = raw.lower() in ("1", "true", "yes", "on")
+        elif isinstance(default, tuple):
+            out[key] = tuple(int(v) for v in raw.split(","))
+        else:
+            out[key] = type(default)(raw)
+    return out
 
 
 # --- anti-collapse regulariser ----------------------------------------------------------------
@@ -214,6 +241,7 @@ class JEPA(nn.Module):
     def __init__(self, cfg: ModelConfig) -> None:
         super().__init__()
         self.cfg = cfg
+        self.amp = False  # set True to run the encoder trunk in bfloat16 (GPU)
         d = cfg.embed_dim
         if cfg.encoder == "cnn":
             self.encoder = CNNEncoder(cfg.image_size, cfg.cnn_channels)
@@ -232,7 +260,12 @@ class JEPA(nn.Module):
     def encode(self, obs: torch.Tensor) -> torch.Tensor:
         """Observations (B, T, 3, H, W) -> embeddings (B, T, D)."""
         B, T = obs.shape[:2]
-        return self.projector(self.encoder(obs.flatten(0, 1))).view(B, T, -1)
+        # Mixed precision covers the encoder trunk only.  The projector, the predictor and the
+        # losses stay in float32: consecutive embeddings differ by a few percent of their scale,
+        # which is about the resolution of bfloat16.
+        with torch.autocast(obs.device.type, dtype=torch.bfloat16, enabled=self.amp):
+            h = self.encoder(obs.flatten(0, 1))
+        return self.projector(h.float()).view(B, T, -1)
 
     def predict(self, emb: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """Teacher-forced next-step prediction.

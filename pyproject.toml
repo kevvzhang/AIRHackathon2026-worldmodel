@@ -12,7 +12,10 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "modal>=1.6.4",
+    "pytest>=8",
+]
 
 [tool.uv]
 # Use a uv-managed interpreter rather than the system/conda one, so the venv
