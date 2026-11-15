@@ -102,7 +102,9 @@ def setup(lab: Lab, sync: bool = True, bench: bool = True, say=print) -> None:
             say(f"{role:10s} {tree}  (branch lab-{role})")
         settings = tree / ".claude" / "settings.local.json"
         settings.parent.mkdir(exist_ok=True)
-        settings.write_text(json.dumps(agent_settings(lab, role), indent=2) + "\n", encoding="utf-8", newline="\n")
+        wanted = json.dumps(agent_settings(lab, role), indent=2) + "\n"
+        if not settings.exists() or settings.read_text(encoding="utf-8") != wanted:  # leave a running agent's file alone
+            settings.write_text(wanted, encoding="utf-8", newline="\n")
         if sync:
             say(f"{role:10s} installing the Python environment (uv sync) ...")
             if subprocess.call(["uv", "sync", "--quiet"], cwd=tree):

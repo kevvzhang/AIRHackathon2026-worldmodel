@@ -20,13 +20,13 @@ import re
 import sys
 import time
 
-ROLES = ("eval", "data", "train")
+ROLES = ("eval", "data", "train", "research")
 FILE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
 READ_ONLY_TOOLS = {"Read", "Grep", "Glob"}  # still allowed when the lab is stopped, so an agent can answer questions
 HUMAN_FILES = {"limits.toml", "ledger.jsonl", "PROGRAM.md", "STOP"}  # on the board; so is everything under roles/
 KEEPERS = {"gaps.md": "eval", "features.md": "eval", "gates.toml": "eval", "champion.txt": "eval",
-           "datasets.md": "data", "recipes.md": "train"}
+           "datasets.md": "data", "recipes.md": "train", "tracks.md": "research"}
 
 STOPPED = ("STOP: the human has stopped the lab. Do not retry and do not work around this. End your turn now, "
            "without scheduling another wake-up; you will be started again.")
@@ -77,6 +77,8 @@ def file_fence(path: str, role: str, home: str) -> str | None:
             return f"{rel} is kept by the {keeper} agent. Send them what should change:  uv run python -m lab msg {keeper} ..."
         if rel.startswith("journal/") and rel != f"journal/{role}.md":
             return "That is another agent's journal; write in your own with  uv run python -m lab note \"...\""
+        if rel.startswith("tracks/") and role != "research":
+            return "Track plans are kept by the research agent. Send it what should change:  uv run python -m lab msg research ..."
         return None
     if f"{os.sep}.claude{os.sep}" in path + os.sep:
         return "Claude Code's settings are set up by the human and are not edited by agents."

@@ -66,6 +66,26 @@ without opening others.
   champion, and start that repeat next to new experiments, not instead of them.
 - A run that crashes in the cloud still costs. Smoke-test first.
 
+## Tracks
+
+A track is a large idea planned by the research agent and tried beside the main line (see
+"Tracks" in `PROGRAM.md`). When research sends you a part of a stage:
+
+- it is one item in your batch, not a replacement for it: at most one run in three belongs to
+  tracks, and blockers on the main line come first;
+- name the run `t00N-<what>` and name the track and the stage in `--note`. The ledger counts such
+  runs against the tracks' own allowance and refuses them beyond it;
+- every track run has a control without the idea (often a main-line run you already have) and is
+  scored on the main benchmark as well, so that with and without are always on the table;
+- build the idea as an option that is off by default, or as a module of its own. The main
+  recipe does not change until eval adopts the track;
+- keep track runs in a section of their own in `recipes.md`, and report to research (message
+  and doorbell) when your part is done or its allowance is spent: it has no timer.
+
+If you want to try something of a different kind yourself, something that needs a new task, a
+new benchmark or new data and not only a change in your own code, propose it to research and
+do not start it alone. An idea that fits in your own batch stays yours.
+
 ## Starting points, not instructions
 
 `README.md`, sections "Results" and "Known limits": one 192-number vector per frame caps what

@@ -52,7 +52,8 @@ def restore(lab: Lab, name: str) -> list[str]:
     done = []
 
     # 1. keep what is there now, uncommitted work included, under kept/<time>/...
-    for role in ROLES:
+    roles = [role for role in ROLES if (lab.worktree(role) / ".git").exists()]  # a lab set up before a role existed lacks it
+    for role in roles:
         tree = lab.worktree(role)
         if git("status", "--porcelain", cwd=tree):
             try:
@@ -64,18 +65,18 @@ def restore(lab: Lab, name: str) -> list[str]:
     git("tag", f"kept/{stamp}/trunk", TRUNK, cwd=lab.home)
     boards.commit(lab.board, f"[human] the board before restoring snapshot {name}")
     git("tag", f"kept/{stamp}/board", BOARD_BRANCH, cwd=lab.home)
-    done.append(f"kept the state you are leaving as the tags kept/{stamp}/trunk, /eval, /data, /train and /board")
+    done.append(f"kept the state you are leaving as the tags kept/{stamp}/trunk, /board and one per agent (/eval, /data, ...)")
 
     # 2. the code: the trunk and every agent's branch
     git("update-ref", f"refs/heads/{TRUNK}", code_sha, cwd=lab.home)
-    for role in ROLES:
+    for role in roles:
         tree = lab.worktree(role)
         git("reset", "-q", "--hard", code_sha, cwd=tree)
         git("clean", "-q", "-fd", cwd=tree)
         settings = tree / ".claude" / "settings.local.json"  # ignored by git, so untouched; rewritten in case it was lost
         settings.parent.mkdir(exist_ok=True)
         settings.write_text(json.dumps(agent_settings(lab, role), indent=2) + "\n", encoding="utf-8", newline="\n")
-    done.append(f"code: the trunk and the three agent branches are at {code_sha[:7]}")
+    done.append(f"code: the trunk and the agents' branches are at {code_sha[:7]}")
 
     # 3. the board: exactly the snapshot's files, plus the ledger as it is now.  A new commit, so
     #    the board's history goes on unbroken.

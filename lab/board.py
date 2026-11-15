@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .paths import git, locked, now, stamp
 
-RECIPIENTS = ("eval", "data", "train", "human")
+RECIPIENTS = ("eval", "data", "train", "research", "human")
 
 
 def slug(text: str, limit: int = 48) -> str:
@@ -90,6 +90,18 @@ def gaps(board: Path) -> list[dict]:
             m = re.match(r"###\s+(G-\d+)\s*\|\s*(.*?)\s*\|\s*(\w+)\s*\|\s*(\w[\w ]*)\s*$", line)
             if m:
                 found.append({"id": m[1], "title": m[2], "severity": m[3].lower(), "status": m[4].strip().lower()})
+    return found
+
+
+def tracks(board: Path) -> list[dict]:
+    """The entries of tracks.md: headings of the form  ### T-001 | title | status."""
+    path = board / "tracks.md"
+    found = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            m = re.match(r"###\s+(T-\d+)\s*\|\s*(.*?)\s*\|\s*(\w[\w ]*)\s*$", line)
+            if m:
+                found.append({"id": m[1], "title": m[2], "status": m[3].strip().lower()})
     return found
 
 

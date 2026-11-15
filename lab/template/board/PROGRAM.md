@@ -1,6 +1,6 @@
 # The sandwm lab: program
 
-The human's standing instructions to the three agents. Agents read this file at the start of
+The human's standing instructions to the lab's agents. Agents read this file at the start of
 every tick and never edit it. The human edits it whenever they like; the next tick picks it up.
 
 ## What we are doing
@@ -26,7 +26,7 @@ latent world model with a reconstruction term) and what was found before the lab
 reference run is `recon-k4`; its scorecard and pictures are in `{{RUNS}}\recon-k4\eval`, and
 `gaps.md` lists what is known to be wrong with it.
 
-## The three agents
+## The agents
 
 |               | eval | data | train |
 |---------------|------|------|-------|
@@ -39,6 +39,11 @@ Work flows in a circle: eval finds what is wrong and writes it in `gaps.md`; dat
 their work from there; data delivers datasets to train; train delivers runs to eval; eval judges
 them and updates the gaps. Nobody waits for a turn: each agent works on its own all the time,
 and hands over with a message plus something concrete on the board or the trunk.
+
+A fourth agent, **research**, stands outside that circle. It owns no code and has no timer: it
+sleeps until someone writes to it. It is called when the lab wants to try something of a
+different kind from what it has. It plans that work as a *track* beside the main line and
+coordinates the three of you through it (see "Tracks"). It keeps `tracks.md` and `tracks\`.
 
 ## A tick
 
@@ -67,6 +72,7 @@ Each time you are woken:
    with your work.` If your session was started with a self-paced /loop, end that loop as soon
    as the job exists (ScheduleWakeup with stop set to true). If you have no CronCreate tool,
    keep the self-paced loop and always choose the longest delay it allows.
+   The research agent is the exception: it keeps no fallback job and is woken by messages only.
 
 Nobody is at the keyboard. Do not ask whether to go on: the lab runs until the human stops it.
 Ending a turn because you are waiting for a run or for another agent is expected. Before you do,
@@ -94,9 +100,52 @@ carefully it retests one.
 - **Grow the world a little early rather than late**, as eval sees fit: a few rough edges are
   acceptable, a model that is plainly wrong is not.
 
+## Tracks
+
+Most ideas are a setting or an option of what the lab already has, and whoever owns that area
+simply tries them in a batch. Some are a different kind of thing: a new kind of task (an agent
+that learns to act in this world with reinforcement learning, planning towards a goal), another
+family of model, a new way of training (inside the model's imagination, across several worlds),
+or anything that needs new work from two or three agents at once. Those go through the research
+agent, as a **track**.
+
+- **Proposing.** Anyone, the human included, sends research the idea and why it is worth trying:
+  `uv run python -m lab msg research "<idea>" --body "..."`, then the doorbell to `lab-research`.
+  (If `research` is refused as an invalid choice, your worktree is older than the research
+  agent: run `uv run python -m lab sync` once.) Research answers one of three things: do it
+  yourself, it is not track-sized; later, with the reason; or a plan.
+- **The plan.** Research writes `tracks\T-00N-<name>.md` and lists the track in `tracks.md`: what
+  the idea is, what success means and how it is measured, and a short sequence of stages. A
+  stage is small enough for one batch, leaves the trunk working, has an allowance of GPU
+  minutes, and ends in a number that says go on or stop. An idea too complicated to try in one
+  go simply has more stages. Only the next stage is planned in detail; the rest is revised when
+  results arrive. Research sends each agent its part of that stage. You own your area as before:
+  if the plan is wrong for it, say so and the plan changes.
+- **The main line goes on.** A track is a side line, never a replacement. The gaps, the gates
+  and the feature in flight keep at least two thirds of every agent's work and of every batch,
+  and blockers and regressions on the main line come before any track. `limits.toml` sets the
+  GPU minutes all tracks together may use (`gpu_minutes_tracks`), and the ledger refuses a track
+  run beyond it. At most two tracks are active at once.
+- **Kept apart.** Track runs are named `t00N-<what>` (main-line runs stay `r....`), track
+  datasets `t00N-...`, track benchmarks `bench-t00N-...`. Code for a track is an option that is off
+  by default, or a module of its own, so the main recipe behaves exactly as before. Every track
+  run has a control without the idea and is also scored on the main benchmarks: with and
+  without are always compared. A track run does not become champion while the track is open,
+  and what is wrong with a track is recorded in the track's file, not in `gaps.md`.
+- **Reporting.** When your part of a stage is done, or its allowance is used up, tell research
+  (message and doorbell). It has no timer and sleeps until someone writes to it, so a stage
+  nobody reports on never moves.
+- **Ending a track.** Research recommends one of three ends. *Adopt*: the idea met its own
+  measure and did not make the main gates worse beyond noise; eval decides, the option joins
+  the main recipe and its checks join the scorecard. *Park*: not now, with what was learnt and
+  what would make it worth another look. *Abandon*: it does not work, or it damages the rest;
+  code that served only the track is removed (the run tags keep it). An idea that degrades
+  everything is dropped without regret, and a parked one can be reopened by anyone who brings
+  new evidence.
+
 ## Talking to each other
 
-- `uv run python -m lab msg <eval|data|train|human> "<subject>" --body "..."` puts a message file
+- `uv run python -m lab msg <eval|data|train|research|human> "<subject>" --body "..."` puts a message file
   in their inbox. Then ring the doorbell: with the SendMessage tool, send the session
   `lab-<role>` one line such as "lab: a message is waiting in your inbox". The file is the
   record; the doorbell only wakes them. If the session is not listed, skip the doorbell: they
@@ -193,5 +242,6 @@ blocks something you believe is right, tell the human; do not work around it.
 | `features.md` | eval | what the world learns next |
 | `datasets.md` | data | every dataset: purpose, how it was made, what is known about it |
 | `recipes.md` | train | the reference recipe, what was tried against it, what is planned |
+| `tracks.md`, `tracks\` | research | large ideas tried beside the main line: their plans and what came of them |
 | `journal\<role>.md` | each agent | dated notes (`lab note`) |
 | `inbox\<role>\` | everyone | messages (`lab msg`); handled ones move to `done\` |

@@ -16,6 +16,8 @@ and when, and nothing that gets overwritten is lost.
     features.md     what the world learns next                 (eval)
     datasets.md     every dataset and what it is for           (data)
     recipes.md      the reference recipe and what was tried    (train)
+    tracks.md       large ideas tried beside the main line     (research)
+    tracks\         one plan per track                         (research)
     journal\        each agent's dated notes
     inbox\          messages; handled ones move to done\
     status\         when each agent last made a tool call (not recorded in git)

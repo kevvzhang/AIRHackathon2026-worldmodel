@@ -97,9 +97,11 @@ def budget_text(lab: Lab) -> str:
     s = Ledger(lab.board).summary()
     running = "; ".join(f"{j['run']} by {j.get('by', '?')}, started {ago(j['t'])}" for j in s["running"]) or "none"
     by = ", ".join(f"{who} {minutes:.1f}" for who, minutes in sorted(s["by"].items())) or "nothing yet"
+    on_tracks = ", ".join(f"{track} {minutes:.1f}" for track, minutes in sorted(s["tracks"].items())) or "nothing yet"
     return (f"GPU minutes: {s['spent']:.1f} spent or booked of {s['total']:g}  ({max(s['total'] - s['spent'], 0):.1f} left)\n"
             f"limits: one job <= {s['per_run']:g} min, <= {s['concurrent']} at once\n"
-            f"running: {running}\nby agent: {by}")
+            f"running: {running}\nby agent: {by}\n"
+            f"research tracks: {sum(s['tracks'].values()):.1f} of the {s['tracks_cap']:g} min they may use together ({on_tracks})")
 
 
 def status_text(lab: Lab, role: str) -> str:
@@ -133,6 +135,10 @@ def status_text(lab: Lab, role: str) -> str:
     still_open = [g for g in found if g["status"] not in ("fixed", "closed", "wontfix")]
     worst = ", ".join(f"{g['id']} {g['title']}" for g in still_open if g["severity"] == "blocker")
     lines.append(f"gaps      {len(still_open)} open of {len(found)}" + (f"; blockers: {worst}" if worst else ""))
+    side = boards.tracks(board)
+    if side:
+        active = ", ".join(f"{t['id']} {t['title']}" for t in side if t["status"] == "active") or "none"
+        lines.append(f"tracks    {len(side)} listed; active: {active}; GPU min used {sum(s['tracks'].values()):.1f} of {s['tracks_cap']:g}")
     lines.append("runs      " + runs_text(lab, 5).replace("\n", "\n          "))
     mine = boards.unread(board, role)
     if mine:

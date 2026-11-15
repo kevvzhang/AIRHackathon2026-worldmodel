@@ -444,7 +444,7 @@ def test_snapshot_and_restore(repo, monkeypatch, capsys):
     assert "restored snapshot pre" in git("log", "-1", "--format=%s", cwd=repo.board)
 
     kept = git("tag", "--list", "kept/*", cwd=repo.home).split()
-    assert sorted(t.rsplit("/", 1)[1] for t in kept) == ["board", "data", "eval", "train", "trunk"]
+    assert sorted(t.rsplit("/", 1)[1] for t in kept) == ["board", "data", "eval", "research", "train", "trunk"]
     tag = {t.rsplit("/", 1)[1]: t for t in kept}
     assert git("show", f"{tag['data']}:notes.txt", cwd=repo.home) == "half an idea"
     assert "GRAVITY = -1" in git("show", f"{tag['data']}:sandwm/sim.py", cwd=repo.home)
@@ -484,3 +484,76 @@ def test_command_line_end_to_end(repo, monkeypatch, capsys):
     assert "STOPPED" in cli.status_text(repo, "human")
     assert cli.main(["go"]) == 0 and not (repo.board / "STOP").exists()
     assert git("status", "--porcelain", cwd=repo.board) == ""
+
+
+# --- the research agent and tracks ---------------------------------------------------------------------------
+def test_tracks_have_a_budget_of_their_own(board):
+    (board / "limits.toml").write_text(LIMITS + "gpu_minutes_tracks = 12\n")
+    ledger = Ledger(board)
+    assert ledger.limits.tracks_cap == 12 and Limits(90.0, 20.0, 2).tracks_cap == 30, "a third of the total unless set"
+    (a,) = ledger.reserve([{"run": "t001-rl-task"}], minutes=5)
+    (b,) = ledger.reserve([{"run": "r0001-main"}], minutes=5)
+    with pytest.raises(Refused, match="track budget"):  # 5 booked + 10 more > 12
+        ledger.reserve([{"run": "t001-rl-policy"}], minutes=10)
+    ledger.settle(a, 2, "ok")
+    ledger.settle(b, 5, "ok")
+    (c,) = ledger.reserve([{"run": "t002-diffusion"}], minutes=10)  # 2 used + 10 = 12: fits exactly
+    summary = ledger.summary()
+    assert summary["tracks"] == {"T-001": 2.0, "T-002": 10.0} and summary["tracks_cap"] == 12 and summary["spent"] == 17
+    with pytest.raises(Refused, match="track budget"):
+        ledger.reserve([{"run": "t001-more"}], minutes=1)
+    ledger.reserve([{"run": "r0002-main"}], minutes=20)  # the main line is not held back by the tracks' cap
+    ledger.settle(c, 10, "ok")
+
+
+def test_track_list_is_read_from_the_board(board):
+    assert boards.tracks(board) == []
+    (board / "tracks.md").write_text("# Tracks\n    ### T-009 | an example in the header | active\n"
+                                     "### T-002 | a diffusion predictor | parked\n- idea\n### T-001 | an agent that acts | active\n")
+    assert boards.tracks(board) == [{"id": "T-002", "title": "a diffusion predictor", "status": "parked"},
+                                    {"id": "T-001", "title": "an agent that acts", "status": "active"}]
+
+
+def test_guard_knows_the_research_agent(tmp_path):
+    lab = tmp_path / ".lab"
+
+    def blocked(role: str, path) -> str | None:
+        return guard.decide(call("Edit", tmp_path, file_path=str(path)), role, str(tmp_path))
+
+    assert blocked("research", lab / "board" / "tracks.md") is None
+    assert blocked("research", lab / "board" / "tracks" / "T-001-rl.md") is None
+    assert blocked("research", lab / "board" / "journal" / "research.md") is None
+    assert blocked("research", lab / "research" / "notes.md") is None
+    assert "kept by the research agent" in blocked("train", lab / "board" / "tracks.md")
+    assert "kept by the research agent" in blocked("eval", lab / "board" / "tracks" / "T-001-rl.md")
+    assert "research agent's worktree" in blocked("data", lab / "research" / "notes.md")
+    assert "kept by the eval agent" in blocked("research", lab / "board" / "gaps.md")
+    assert "kept by the train agent" in blocked("research", lab / "board" / "recipes.md")
+    assert "train agent's worktree" in blocked("research", lab / "train" / "sandwm" / "models.py")
+    assert "human's" in blocked("research", lab / "board" / "limits.toml")
+
+
+def test_research_is_set_up_and_reachable(repo, monkeypatch, capsys):
+    tree = repo.worktree("research")
+    assert git("branch", "--show-current", cwd=tree) == "lab-research" and cli.current_role(tree) == "research"
+    assert json.loads((tree / ".claude" / "settings.local.json").read_text())["env"]["LAB_ROLE"] == "research"
+    for name in ("roles/research.md", "tracks.md", "tracks/.gitkeep", "inbox/research/.gitkeep"):
+        assert (repo.board / name).exists(), name
+    program = (repo.board / "PROGRAM.md").read_text(encoding="utf-8")
+    assert "## Tracks" in program and "lab msg <eval|data|train|research|human>" in program
+    assert Ledger(repo.board).limits.tracks_cap == 100
+    monkeypatch.chdir(repo.worktree("train"))
+    assert cli.main(["msg", "research", "idea: an agent that learns to act in the world", "--body", "with RL"]) == 0
+    assert "lab-research" in capsys.readouterr().out
+    assert [boards.subject(p) for p in boards.unread(repo.board, "research")] == ["idea: an agent that learns to act in the world"]
+    (repo.board / "tracks.md").write_text("### T-001 | an agent that acts | active\n", encoding="utf-8")
+    (job,) = Ledger(repo.board).reserve([{"run": "t001-task", "by": "train"}], minutes=5)
+    Ledger(repo.board).settle(job, 4, "ok")
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "research  has not run yet" in out and "active: T-001 an agent that acts; GPU min used 4.0 of 100" in out
+    assert cli.main(["budget"]) == 0 and "research tracks: 4.0 of the 100 min" in capsys.readouterr().out
+    settings = tree / ".claude" / "settings.local.json"
+    before = settings.stat().st_mtime_ns
+    setup(repo, sync=False, bench=False, say=lambda *_: None)
+    assert settings.stat().st_mtime_ns == before, "an unchanged settings file is not rewritten under a running agent"

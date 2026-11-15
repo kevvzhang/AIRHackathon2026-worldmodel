@@ -104,6 +104,25 @@ While the last gaps are still being closed you may already ask data to prepare t
 feature's world and its benchmark, so that training can start the moment you open it. It is
 your call.
 
+## Tracks
+
+A track is a large idea planned by the research agent and tried beside the main line (see
+"Tracks" in `PROGRAM.md`). Your parts in one:
+
+- **The yardstick comes first.** Before anything is trained for a stage, say how it will be
+  judged: the benchmark, the checks, the number that means go on. Give track checks a prefix of
+  their own in the scorecard, and do not gate the main line on them.
+- **With and without.** Score every track run (`t00N-...`) on the main benchmarks too, against
+  its control. A track must not make the main gates worse beyond noise.
+- **Kept apart.** A track run does not become champion while its track is open, and what is
+  wrong with a track goes to research for the track's file, not into `gaps.md`.
+- **Adoption is your decision.** Research recommends; you decide on the evidence whether the
+  idea joins the main recipe. Then its checks join the scorecard like any others.
+- The main line keeps at least two thirds of your effort. Report to research (message and
+  doorbell) when your part is done: it has no timer.
+
+If you see the need for something of a different kind yourself, propose it to research.
+
 ## When no run is waiting
 
 - Look for failures that no check covers. Study the champion's pictures. Build probes for

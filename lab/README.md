@@ -1,23 +1,26 @@
 # The agent lab
 
 Three Claude Code agents improve the world model in a loop, in the spirit of Karpathy's
-autoresearch: the human writes the program, the agents do the research.
+autoresearch: the human writes the program, the agents do the research. A fourth plans the
+ideas that are too different to fit in that loop.
 
 | agent | looks after | hands over |
 |-------|-------------|------------|
 | **eval** | what the model actually does: scores every run, looks at the rollout pictures, keeps the list of gaps, decides when the world is "roughly right" and what feature comes next | gaps, verdicts, new checks |
 | **data** | the simulator and the datasets: data aimed at the gaps, new world features | datasets, benchmarks |
 | **train** | the model and the recipe: architecture, objective, launching and reading runs | runs |
+| **research** | large ideas of a different kind (an agent acting in the world with RL, another family of model): plans each as a staged side line, a *track*, and coordinates the other three through it. Owns no code, starts no jobs | plans, go/stop calls |
 
 Each agent is an ordinary interactive Claude Code session (Opus 5.5, effort xhigh by default)
 in its own terminal tab, working in its own git worktree. It is woken by its own finished jobs
-and by messages from the other agents, with a fallback check every 2 hours.
+and by messages from the other agents, with a fallback check every 2 hours. The research agent
+has no fallback: it sleeps until someone writes to it.
 
 ## Start, watch, stop
 
     uv run python -m lab setup          # once: board, trunk, worktrees, benchmark (safe to repeat)
     .\lab\launch.ps1 -DryRun            # print exactly what would be started
-    .\lab\launch.ps1                    # start the three agents (one Windows Terminal tab each)
+    .\lab\launch.ps1                    # start the four agents (one Windows Terminal tab each)
 
     uv run python -m lab status         # one screen: budget, runs, inboxes, who is alive, open gaps
     uv run python -m lab runs           # every cloud job, its cost and its gates
@@ -43,6 +46,8 @@ Everything the agents are told lives on the board, `.lab\board`, and they reread
 - `limits.toml` is the money: total GPU minutes, the longest one job may run, how many at once.
 - To tell one agent something: `uv run python -m lab msg train "subject" --body "..."`, or type
   into its terminal tab.
+- To put a large new idea into the lab: `uv run python -m lab msg research "idea: ..." --body "..."`
+  and then say "you have a message" in the research agent's tab (it has no timer). See "Tracks".
 - Agents write to you with `lab msg human`; `lab status` shows how many messages are waiting, and
   they are files in `.lab\board\inbox\human`.
 
@@ -60,6 +65,25 @@ Agents never touch `main` or this checkout. They publish to the branch `lab-trun
 their work: `git merge lab-trunk` here. To give them a change you made on `main`:
 `git merge lab-trunk`, then `git branch -f lab-trunk main` (never check `lab-trunk` out; nothing
 should hold it).
+
+## Tracks: large ideas beside the main line
+
+Some ideas are not a setting of what exists but a different kind of thing: an agent that learns
+to act in the world, a different family of model. Trying one must not stop the main work, may
+turn out to damage everything, and is often too big for one step. So such an idea becomes a
+*track*, run by the research agent (`PROGRAM.md`, "Tracks", and `roles\research.md`):
+
+- anyone, you included, proposes it to research; research answers "just try it", "later", or
+  writes a plan in `.lab\board\tracks\` and lists it in `tracks.md`;
+- the plan is a sequence of small stages, each with a GPU allowance and a number that says go on
+  or stop; only the next stage is planned in detail;
+- the main line keeps at least two thirds of every agent's work, and track runs (named
+  `t001-...`) can use at most `gpu_minutes_tracks` from `limits.toml`: the ledger refuses more;
+- track code is off by default, track runs are compared with a control and scored on the main
+  benchmarks too, and a track run never becomes champion while its track is open;
+- a track ends adopted (eval decides; it joins the main recipe), parked, or abandoned.
+
+`uv run python -m lab status` lists the tracks and what they have spent.
 
 ## Going back
 
@@ -102,6 +126,8 @@ wrong, so a later run that breaks it again is caught by the numbers.
 | agents write only in their worktree, their own board files and the shared folders | the guard hook (`lab/guard.py`, a PreToolUse hook in each worktree's `.claude\settings.local.json`), for the file-editing tools |
 | no direct `modal run`, no touching the limits, the ledger, credentials, other Modal projects, `git push`, branch surgery | the guard hook, by matching shell commands |
 | tests pass before code reaches the trunk; `lab/` and `cloud.py` are not changed by agents | `python -m lab publish` |
+| research tracks use at most `gpu_minutes_tracks` in total | `lab/budget.py`, by the run name (`t001-...`) |
+| the share of work tracks get, when a track is adopted or dropped | the instructions only |
 | everything else | the session's permission mode (`auto` by default: Claude Code's safety classifier) and the instructions |
 
 The guard catches slips; it is not a sandbox, and a shell command can get around it. The limits
@@ -112,6 +138,7 @@ Usage and billing in the Modal dashboard.
 
 - **GPU**: at most `gpu_minutes_total` in `limits.toml` (300 minutes by default, roughly $6-8
   on L4/A10G including the container's CPU and memory). Dataset generation on cloud CPUs adds cents.
+  Of that total, research tracks may use at most `gpu_minutes_tracks`.
 - **Claude usage**: three Opus sessions at effort xhigh. An agent with nothing to do sleeps
   until a job of its own ends or another agent messages it, and otherwise wakes once every
   2 hours as a fallback. Usage is still by far the larger cost, and it comes out of your Claude

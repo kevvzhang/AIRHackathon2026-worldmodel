@@ -1,19 +1,20 @@
 <#
 .SYNOPSIS
-    Start the sandwm lab: one terminal tab per agent (eval, data, train), each an interactive
-    Claude Code session that keeps working until you stop the lab.
+    Start the sandwm lab: one terminal tab per agent (eval, data, train, research), each an
+    interactive Claude Code session. eval, data and train keep working until you stop the lab;
+    research sleeps until one of them, or you, writes to it.
 
 .DESCRIPTION
     Run it from anywhere; it finds the repository from its own location.
       .\lab\launch.ps1 -DryRun                  print what would be started, start nothing
-      .\lab\launch.ps1                          start all three agents
+      .\lab\launch.ps1                          start all four agents
       .\lab\launch.ps1 -Roles train             start (or restart) one agent
       .\lab\launch.ps1 -Roles eval -Continue    restart one agent in its last conversation
     To stop everything:   uv run python -m lab stop
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('eval', 'data', 'train')][string[]]$Roles = @('eval', 'data', 'train'),
+    [ValidateSet('eval', 'data', 'train', 'research')][string[]]$Roles = @('eval', 'data', 'train', 'research'),
     [string]$Model = 'claude-opus-5-5',
     [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')][string]$Effort = 'xhigh',
     [ValidateSet('auto', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions')][string]$PermissionMode = 'auto',

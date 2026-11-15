@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROLES = ("eval", "data", "train")
+ROLES = ("eval", "data", "train", "research")  # research owns no code: it plans tracks and is woken only by messages
 TRUNK = "lab-trunk"  # the branch the agents publish to; `main` stays the human's
 BOARD_BRANCH = "lab-board"
 DEFAULT_BENCH = "bench-basic-v1"

@@ -9,6 +9,7 @@ end is charged its full allowance, so the ledger can over-count but never under-
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from dataclasses import dataclass
 from datetime import timedelta
@@ -18,6 +19,12 @@ from .paths import LabError, locked, now, parse_time, stamp
 
 NO_WAY_AROUND = ("Do not look for another way to start it. Carry on with work that needs no GPU; if more budget would "
                  "change what the lab can achieve, say so once to the human:  uv run python -m lab msg human ...")
+
+
+def track_of(run: str) -> str | None:
+    """T-001 for a run named t001-..., the naming that marks a run as part of a research track; else None."""
+    m = re.match(r"t(\d{3})-", run)
+    return f"T-{m[1]}" if m else None
 
 
 class Refused(LabError):
@@ -30,13 +37,19 @@ class Limits:
     gpu_minutes_per_run: float
     max_concurrent_gpu_runs: int
     cpu_minutes_per_job: float = 20.0
+    gpu_minutes_tracks: float | None = None  # of the total, the most all research tracks may use; None = a third
+
+    @property
+    def tracks_cap(self) -> float:
+        return self.gpu_minutes_total / 3 if self.gpu_minutes_tracks is None else self.gpu_minutes_tracks
 
     @classmethod
     def load(cls, path: Path) -> "Limits":
         try:
             raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
+            tracks = raw.get("gpu_minutes_tracks")
             return cls(float(raw["gpu_minutes_total"]), float(raw["gpu_minutes_per_run"]), int(raw["max_concurrent_gpu_runs"]),
-                       float(raw.get("cpu_minutes_per_job", 20.0)))
+                       float(raw.get("cpu_minutes_per_job", 20.0)), None if tracks is None else float(tracks))
         except (OSError, KeyError, TypeError, ValueError) as err:
             raise Refused(f"cannot read the lab's limits from {path} ({err!r}); no cloud job may start until the human repairs it")
 
@@ -97,6 +110,13 @@ class Ledger:
             if spent + cap * len(names) > limits.gpu_minutes_total + 1e-9:
                 raise Refused(f"GPU budget: {spent:.1f} of {limits.gpu_minutes_total:g} minutes are spent or booked, so "
                               f"{len(names)} more job(s) of up to {cap:g} min do not fit. {NO_WAY_AROUND}")
+            on_tracks = [name for name in names if track_of(name)]
+            if on_tracks:  # side lines may not crowd out the main line
+                used = sum(j["charged"] for j in jobs if track_of(j["run"]))
+                if used + cap * len(on_tracks) > limits.tracks_cap + 1e-9:
+                    raise Refused(f"track budget: research tracks have used or booked {used:.1f} of the {limits.tracks_cap:g} GPU "
+                                  f"minutes they may use together, so {len(on_tracks)} more track job(s) of up to {cap:g} min do "
+                                  "not fit. The rest of the budget is the main line's. Tell the research agent; do not rename the run.")
             busy = self.running()
             if len(busy) + len(names) > limits.max_concurrent_gpu_runs:
                 raise Refused(f"{len(busy)} GPU job(s) are running ({', '.join(j['run'] for j in busy)}) and at most "
@@ -125,7 +145,11 @@ class Ledger:
     def summary(self) -> dict:
         jobs, limits = self.jobs(), self.limits
         by: dict[str, float] = {}
+        tracks: dict[str, float] = {}
         for j in jobs:
             by[j.get("by", "?")] = by.get(j.get("by", "?"), 0.0) + j["charged"]
+            if track_of(j["run"]):
+                tracks[track_of(j["run"])] = tracks.get(track_of(j["run"]), 0.0) + j["charged"]
         return {"spent": sum(j["charged"] for j in jobs), "total": limits.gpu_minutes_total, "per_run": limits.gpu_minutes_per_run,
-                "concurrent": limits.max_concurrent_gpu_runs, "running": self.running(), "by": by, "jobs": len(jobs)}
+                "concurrent": limits.max_concurrent_gpu_runs, "running": self.running(), "by": by, "jobs": len(jobs),
+                "tracks": tracks, "tracks_cap": limits.tracks_cap}

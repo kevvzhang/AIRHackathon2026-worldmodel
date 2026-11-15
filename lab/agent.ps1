@@ -7,10 +7,11 @@
     .\lab\agent.ps1 -Role eval
     .\lab\agent.ps1 -Role train -DryRun       # print the command, start nothing
     .\lab\agent.ps1 -Role data -Continue      # pick up the agent's last conversation
+    .\lab\agent.ps1 -Role research            # the research agent: no loop, woken only by messages
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('eval', 'data', 'train')][string]$Role,
+    [Parameter(Mandatory = $true)][ValidateSet('eval', 'data', 'train', 'research')][string]$Role,
     [string]$Model = 'claude-opus-5-5',
     [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')][string]$Effort = 'xhigh',
     [ValidateSet('auto', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions')][string]$PermissionMode = 'auto',
@@ -34,15 +35,15 @@ if (Test-Path (Join-Path $board 'STOP')) {
 }
 
 # Both texts are passed to claude.exe as single arguments: keep them on one line, without double quotes.
-$identity = "You are the $Role agent of the sandwm lab: one of three autonomous Claude Code agents (eval, data, train) " +
+$identity = "You are the $Role agent of the sandwm lab: one of four autonomous Claude Code agents (eval, data, train, research) " +
     "that together improve a world model of a 2D falling-sand world and make that world richer. " +
     "Your standing instructions are two files on the lab board: $board\PROGRAM.md and $board\roles\$Role.md. " +
-    "Read both at the start of each tick, because the human edits them, and follow them where they differ from your defaults. " +
+    "Read both every time you are woken, because the human edits them, and follow them where they differ from your defaults. " +
     "You work in your own git worktree, $tree, and in the shared folders under $lab. " +
     "The rest of this machine, including the main checkout $repo, is not yours to change. " +
     "Nobody is watching this terminal: do not ask questions here and do not wait for answers. " +
     "Whatever the human should know or decide goes to their inbox with: uv run python -m lab msg human. " +
-    "The three agents run as the sessions lab-eval, lab-data and lab-train; yours is lab-$Role."
+    "The agents run as the sessions lab-eval, lab-data, lab-train and lab-research; yours is lab-$Role."
 
 $tick = "/loop Lab tick ($Role agent). " +
     "First read $board\PROGRAM.md and $board\roles\$Role.md. " +
@@ -51,6 +52,15 @@ $tick = "/loop Lab tick ($Role agent). " +
     "Then do the most valuable piece of work your role file describes, up to a point where it is recorded and shared. " +
     "Before the turn ends, record what you did and what comes next with: uv run python -m lab note. " +
     "Finally schedule your next wake-up as PROGRAM.md says."
+if ($Role -eq 'research') {
+    # No loop and no timer: this agent sleeps until another agent or the human writes to it.
+    $tick = "Lab research agent: you have just been started. " +
+        "Read $board\PROGRAM.md and $board\roles\research.md. " +
+        "Then run: uv run python -m lab status. " +
+        "Then read tracks.md and your inbox on the board and deal with whatever is there. " +
+        "Record what you did with: uv run python -m lab note. Then end your turn. " +
+        "Start no loop and no timer: you are woken only by messages."
+}
 
 $claudeArgs = @(
     '--model', $Model,

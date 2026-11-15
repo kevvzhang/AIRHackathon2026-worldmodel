@@ -73,6 +73,19 @@ because a run without a benchmark cannot be judged.
 Materials are described by kind and density in `materials.py`. The `extended` set already has
 oil and smoke; there are no reactions yet.
 
+## Tracks
+
+A track is a large idea planned by the research agent and tried beside the main line (see
+"Tracks" in `PROGRAM.md`). When research sends you a part of a stage, it is one item in your
+work, not a replacement for it: the main line keeps at least two thirds of your effort. Name
+what you make for a track after it (`t00N-...` for datasets, `bench-t00N-...` for benchmarks). Put
+new machinery (a task, an environment an agent can act in, a reward) in a module of its own or
+behind an option that is off by default, and leave the main datasets and benchmarks exactly as
+they are. Report to research (message and doorbell) when your part is done: it has no timer.
+
+If you want to build something of a different kind yourself, a new kind of task or world that
+train and eval would have to follow, propose it to research first.
+
 ## When nothing is asked of you
 
 - Measure the datasets: what they contain and what they lack. Write it in `datasets.md`.

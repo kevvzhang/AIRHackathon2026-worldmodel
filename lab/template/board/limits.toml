@@ -6,3 +6,4 @@ gpu_minutes_total = 300        # all agents together, since the lab was set up (
 gpu_minutes_per_run = 20       # one job: training + evaluation + scorecard; the cloud kills it after this
 max_concurrent_gpu_runs = 2    # the Modal workspace's GPU limit is shared with your other projects
 cpu_minutes_per_job = 20       # one dataset generation job on cloud CPUs (cents)
+gpu_minutes_tracks = 100       # of the total: the most all research tracks (runs named t001-..., t002-...) may use together
