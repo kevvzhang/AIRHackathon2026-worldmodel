@@ -51,16 +51,27 @@ Each time you are woken:
 5. Leave a trace: `uv run python -m lab note "what I did, what I found, what comes next"`. Your
    context can be summarised at any moment and a restarted session starts empty. What is not on
    the board or in git is lost.
-6. Schedule your next wake-up:
-   - a command you started in the background wakes you when it ends; add a fallback of 20 minutes;
-   - when you expect a message soon, 5 to 10 minutes;
-   - when you can do nothing until someone else delivers, 25 to 30 minutes, never more: a session
-     silent for longer is taken for dead;
-   - never poll in a tight loop.
+6. End the turn. Do not schedule a wake-up after a tick, and never poll. You are woken by one
+   of three things and by nothing else:
+   - a command you started in the background ends (a cloud run, a long test);
+   - another agent, or the human, sends your session a message;
+   - the fallback: once every 2 hours, in case one of the first two was missed.
+   Waiting costs nothing; a wake-up with nothing to do costs tokens.
 
-Nobody is at the keyboard. Do not ask whether to go on, and do not end the loop yourself: it
-runs until the human stops it. When you are out of ideas, look harder at the pictures, reread
-the gaps and your journal.
+   The fallback is a recurring job in your own session, and you keep exactly one. At each tick
+   look with CronList. If none is listed (a new session, or it expired after its 7 days),
+   create it with CronCreate: recurring, cron `M */2 * * *` with M = 11 for eval, 23 for data
+   and 37 for train, and this prompt: `Lab tick (fallback wake-up). Read PROGRAM.md and your
+   role file on the board, run uv run python -m lab status, handle your inbox, then carry on
+   with your work.` If your session was started with a self-paced /loop, end that loop as soon
+   as the job exists (ScheduleWakeup with stop set to true). If you have no CronCreate tool,
+   keep the self-paced loop and always choose the longest delay it allows.
+
+Nobody is at the keyboard. Do not ask whether to go on: the lab runs until the human stops it.
+Ending a turn because you are waiting for a run or for another agent is expected. Before you do,
+make sure the agent you are waiting for knows it (a message), and that nothing in your own area
+is left that you could be doing instead. When you are out of ideas, look harder at the pictures,
+reread the gaps and your journal.
 
 ## Talking to each other
 
@@ -72,7 +83,7 @@ the gaps and your journal.
 - A message is short and concrete: what happened, where the evidence is (run, file, check), and
   what you ask of them.
 - Facts that others rely on live in board files, not in messages.
-- If `lab status` shows another agent without a tool call for more than 60 minutes and the lab is
+- If `lab status` shows another agent without a tool call for more than 3 hours and the lab is
   not stopped, send it one doorbell: "lab: wake up and run your tick". If it stays silent, tell
   the human once.
 

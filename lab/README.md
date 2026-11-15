@@ -10,7 +10,8 @@ autoresearch: the human writes the program, the agents do the research.
 | **train** | the model and the recipe: architecture, objective, launching and reading runs | runs |
 
 Each agent is an ordinary interactive Claude Code session (Opus 5.5, effort xhigh by default)
-in its own terminal tab, working in its own git worktree and waking itself with `/loop`.
+in its own terminal tab, working in its own git worktree. It is woken by its own finished jobs
+and by messages from the other agents, with a fallback check every 2 hours.
 
 ## Start, watch, stop
 
@@ -111,19 +112,26 @@ Usage and billing in the Modal dashboard.
 
 - **GPU**: at most `gpu_minutes_total` in `limits.toml` (300 minutes by default, roughly $6-8
   on L4/A10G including the container's CPU and memory). Dataset generation on cloud CPUs adds cents.
-- **Claude usage**: three Opus sessions at effort xhigh that never stop. An idle agent still
-  wakes at least every 30 minutes and rereads its instructions. This is by far the larger cost,
-  and it comes out of your Claude plan or API budget, not out of `limits.toml`.
+- **Claude usage**: three Opus sessions at effort xhigh. An agent with nothing to do sleeps
+  until a job of its own ends or another agent messages it, and otherwise wakes once every
+  2 hours as a fallback. Usage is still by far the larger cost, and it comes out of your Claude
+  plan or API budget, not out of `limits.toml`.
 
 ## Known limits of this setup
 
-- The loop is Claude Code's self-paced `/loop`. It ends if a wake-up fails twice in a row (for
-  example while a usage limit is in force), it is not restored by `--continue`, and it expires
-  after seven days. `lab status` shows each agent's last tool call; restart a silent one with
-  `.\lab\launch.ps1 -Roles <role>`. Agents are told to wake a peer that has gone quiet, which
-  does not help when all three hit the same limit.
+- Waking is event-driven: a finished background command wakes the agent that started it, and a
+  message from another agent wakes an idle session. The only timer is a fallback: each agent
+  keeps one recurring job in its own session that fires every 2 hours (`PROGRAM.md`, "A tick").
+  A session is launched with a self-paced `/loop` and ends that loop once the job exists. The
+  job lives only in the session: it is gone if the session is restarted (the agent creates it
+  again at its first tick) and it expires after seven days (likewise).
+- `lab status` shows each agent's last tool call. An idle agent can be silent for over 2 hours;
+  restart one that stays silent with `.\lab\launch.ps1 -Roles <role>`. Agents are told to wake
+  a peer silent for more than 3 hours, which does not help when all three hit the same usage
+  limit.
 - One poke between agents is a file in the inbox plus a cross-session message that wakes the
-  receiving session. If the message is not delivered, the file is found at the next tick.
+  receiving session. If the message is not delivered, the file is found at the next tick, which
+  can now be up to 2 hours away.
 - All three agents share this laptop's CPU and one Modal GPU quota (also used by your other
   projects), so jobs can queue.
 - The agents themselves have not been run yet. The tooling is tested (`uv run pytest`), but the
