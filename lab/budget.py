@@ -59,6 +59,7 @@ class Limits:
     cpu_minutes_per_job: float = 20.0
     gpu_minutes_tracks: float | None = None  # of the total, the most all research tracks may use; None = a third
     session_hours: float = 6.0  # an agent's conversation is replaced by an empty one after this long; 0 = never (lab/sessions.py)
+    coverage_hours: float = 2.0  # `lab status` tells eval when coverage.md has stood still for this long; 0 = never
 
     @property
     def tracks_cap(self) -> float:
@@ -71,7 +72,7 @@ class Limits:
             tracks = raw.get("gpu_minutes_tracks")
             return cls(float(raw["gpu_minutes_total"]), float(raw["gpu_minutes_per_run"]), int(raw["max_concurrent_gpu_runs"]),
                        float(raw.get("cpu_minutes_per_job", 20.0)), None if tracks is None else float(tracks),
-                       float(raw.get("session_hours", cls.session_hours)))
+                       float(raw.get("session_hours", cls.session_hours)), float(raw.get("coverage_hours", cls.coverage_hours)))
         except (OSError, KeyError, TypeError, ValueError) as err:
             raise Refused(f"cannot read the lab's limits from {path} ({err!r}); no cloud job may start until the human repairs it")
 

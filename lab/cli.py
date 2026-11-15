@@ -13,6 +13,8 @@ Agents run these from their own worktree, the human from the main checkout.
     publish                        merge the trunk, run the tests, move the trunk to your commit
     train NAME --data D -- ARGS    train on a cloud GPU within the budget, score it on the benchmark, fetch the results
     generate NAME -- ARGS          simulate a dataset in the cloud
+    score RUN --card C --bench B [--also B ...] [-- ARGS]
+                                   score a run on benchmarks on cloud CPUs (no GPU, not the laptop); the card comes back
     fetch NAME [--data] [--again]  copy a run (or a dataset) from the cloud volume into the shared folder
     runs                           what has been run, what it cost, how it scored
     budget                         GPU minutes spent, booked and left
@@ -147,10 +149,13 @@ def status_text(lab: Lab, role: str) -> str:
     worst = ", ".join(f"{g['id']} {g['title']}" for g in still_open if g["severity"] == "blocker")
     lines.append(f"gaps      {len(still_open)} open of {len(found)}" + (f"; blockers: {worst}" if worst else ""))
     unseen = [c for c in boards.coverage(board) if c["status"] != "covered"]
+    still = boards.coverage_age(board)  # hours since coverage.md last changed
+    stale = bool(unseen) and still is not None and 0 < Ledger(board).limits.coverage_hours <= still
     if boards.coverage(board):
         first = ", ".join(f"{c['id']} {c['title']}" for c in unseen if c["priority"] == "high")
         lines.append(f"coverage  {len(unseen)} situation(s) the evaluation does not cover yet, of {len(boards.coverage(board))} listed"
-                     + (f"; high: {first}" if first else ""))
+                     + (f"; high: {first}" if first else "")
+                     + (f"; ** the list has not moved for {still:.1f} h **" if stale else ""))
     side = boards.tracks(board)
     if side:
         active = ", ".join(f"{t['id']} {t['title']}" for t in side if t["status"] == "active") or "none"
@@ -162,6 +167,14 @@ def status_text(lab: Lab, role: str) -> str:
         lines.append(f"your inbox ({len(mine)}):")
         lines += [f"  {p.name}   {boards.subject(p)}" for p in mine[:10]]
         lines.append(f"  read them in {board / 'inbox' / role}; then  uv run python -m lab ack")
+    if stale and role == "eval":
+        ready = ", ".join(c["id"] for c in unseen if c["status"] == "asked") or "none"
+        lines.append(f"COVERAGE IS WAITING: coverage.md has not moved for {still:.1f} h and {len(unseen)} of its entries are not "
+                     f"covered (probe asked for or built: {ready}). This tick, before any track work, move one entry one step: "
+                     "score a probe that exists, write the check, or ask data for the probe. Scoring runs in the cloud beside "
+                     "your other work, not on the laptop:\n"
+                     f"  uv run python -m lab score {champion or '<run>'} --card <card> --bench <bench> --also <bench> ... -- --no-pictures\n"
+                     '  (roles\\eval.md, "What the evaluation does not see")')
     own = sessions.read(board, role) if role in ROLES else None
     if own and own.due and own.mine:
         lines.append(sessions.due_notice(own))
@@ -278,6 +291,24 @@ def generate(lab: Lab, cwd: Path, role: str, a, rest: list[str]) -> int:
     return sh(["uv", "run", "modal", "run", "cloud.py::generate", "--name", name, f"--args={shlex.join(rest)}", "--note", a.note], cwd=cwd)
 
 
+def score(lab: Lab, cwd: Path, role: str, a, rest: list[str]) -> int:
+    """Run `sandwm.scorecard` for a run on cloud CPUs, and copy the card it writes into the shared runs folder."""
+    need_lab(lab)
+    name = check_name(a.run)
+    ready_to_ship(cwd, role)
+    taken = sorted({"--run", "--bench", "--also", "--card", "--device"} & {arg.partition("=")[0] for arg in rest})
+    if taken:
+        raise LabError(f"{', '.join(taken)}: `lab score` sets these itself. Give the benchmarks by name with --bench and --also, "
+                       "the card with --card; after `--` come only further scorecard options (--twin 1, --no-pictures, ...).")
+    cmd = ["uv", "run", "modal", "run", "cloud.py::score", "--name", name, "--bench", a.bench, "--card", a.card,
+           "--data", str(lab.datasets), "--out", str(lab.runs), "--note", a.note]
+    if a.also:
+        cmd += ["--also", " ".join(a.also)]
+    if rest:
+        cmd.append(f"--args={shlex.join(rest)}")
+    return sh(cmd, cwd=cwd)
+
+
 # --- stopping -----------------------------------------------------------------------------------------------
 def stop_cloud(lab: Lab) -> list[str]:
     """Stop the lab's cloud app wherever it is running.  Other apps in the workspace are not touched."""
@@ -318,6 +349,12 @@ def build_parser() -> argparse.ArgumentParser:
     g = sub.add_parser("generate")
     g.add_argument("name")
     g.add_argument("--note", default="", help="what this dataset is for, in one line")
+    sc = sub.add_parser("score")
+    sc.add_argument("run", help="a run on the cloud volume; a name without a model is allowed with `-- --twin SEED`")
+    sc.add_argument("--bench", required=True, help="benchmark dataset to score on (its name; uploaded if the volume lacks it)")
+    sc.add_argument("--also", nargs="*", default=[], help="further benchmarks; their checks enter the card as <bench>:<check>")
+    sc.add_argument("--card", required=True, help="the card to write, <run>/eval/<card>.json (the run's own is `scorecard`)")
+    sc.add_argument("--note", default="", help="what this scoring is for, in one line")
     f = sub.add_parser("fetch")
     f.add_argument("name")
     f.add_argument("--data", action="store_true", help="fetch a dataset instead of a run")
@@ -389,6 +426,8 @@ def run(argv: list[str]) -> int:
         return train(lab, cwd, role, a, rest)
     elif c == "generate":
         return generate(lab, cwd, role, a, rest)
+    elif c == "score":
+        return score(lab, cwd, role, a, rest)
     elif c == "fetch":
         return fetch(lab, check_name(a.name), "data" if a.data else "runs", a.again)
     elif c == "runs":

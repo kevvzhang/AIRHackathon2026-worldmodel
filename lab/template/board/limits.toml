@@ -9,3 +9,4 @@ cpu_minutes_per_job = 20       # one dataset generation job on cloud CPUs (cents
 gpu_minutes_tracks = 100       # of the total: the most all research tracks (runs named t001-..., t002-...) may use together
 session_hours = 6              # an agent's conversation is replaced by an empty one after this many hours; 0 = never
 compact_tokens = 500000        # a conversation is summarised (compacted) once it holds this many tokens; 100000 to 1000000, 0 = Claude Code's default (about 967000)
+coverage_hours = 2             # `lab status` tells eval when coverage.md has stood still this long while entries are not covered; 0 = never

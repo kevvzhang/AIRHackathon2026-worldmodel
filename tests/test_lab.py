@@ -1,6 +1,7 @@
 """The agent lab's tooling: budget, board, guard, sharing code.  Nothing here starts an agent or a cloud job."""
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -736,6 +737,22 @@ def test_coverage_list_is_read_shown_and_kept_by_eval(repo, monkeypatch, capsys)
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "coverage  3 situation(s) the evaluation does not cover yet, of 4 listed; high: C-002 intermittent actions" in out
+    assert "has not moved" not in out and "COVERAGE IS WAITING" not in out
+
+    long_ago = time.time() - 3 * 3600  # nobody has touched the list for three hours: everyone sees it, eval is told what to do
+    os.utime(repo.board / "coverage.md", (long_ago, long_ago))
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "; ** the list has not moved for 3.0 h **" in out and "COVERAGE IS WAITING" not in out
+    monkeypatch.setenv("LAB_ROLE", "eval")
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "COVERAGE IS WAITING: coverage.md has not moved for 3.0 h and 3 of its entries are not covered" in out
+    assert "uv run python -m lab score recon-k4 --card <card> --bench <bench>" in out
+    limits = (repo.board / "limits.toml").read_text(encoding="utf-8")
+    (repo.board / "limits.toml").write_text(limits.replace("coverage_hours = 2", "coverage_hours = 0"), encoding="utf-8")
+    assert cli.main(["status"]) == 0 and "has not moved" not in capsys.readouterr().out, "0 = never said"
+    monkeypatch.delenv("LAB_ROLE")
     assert "## What the evaluation does not see" in (repo.board / "PROGRAM.md").read_text(encoding="utf-8")
     assert "## What the evaluation does not see" in (repo.board / "roles" / "eval.md").read_text(encoding="utf-8")
 
@@ -743,6 +760,23 @@ def test_coverage_list_is_read_shown_and_kept_by_eval(repo, monkeypatch, capsys)
         return guard.decide(call("Edit", repo.home, file_path=str(repo.board / "coverage.md")), role, str(repo.home))
 
     assert blocked("eval") is None and "kept by the eval agent" in blocked("train") and "kept by the eval agent" in blocked("data")
+
+
+def test_lab_score_sends_a_scoring_to_the_cloud(repo, monkeypatch, capsys):
+    tree, sent = repo.worktree("eval"), []
+    monkeypatch.chdir(tree)
+    monkeypatch.setenv("LAB_ROLE", "eval")
+    monkeypatch.setattr(cli, "sh", lambda cmd, cwd=None: sent.append((cmd, cwd)) or 0)
+    assert cli.main(["score", "r0001", "--card", "coverage", "--bench", "bench-a", "--also", "bench-b", "bench-c=walls",
+                     "--note", "C-001", "--", "--no-pictures", "--twin", "1"]) == 0
+    assert sent == [(["uv", "run", "modal", "run", "cloud.py::score", "--name", "r0001", "--bench", "bench-a", "--card", "coverage",
+                      "--data", str(repo.datasets), "--out", str(repo.runs), "--note", "C-001", "--also", "bench-b bench-c=walls",
+                      "--args=--no-pictures --twin 1"], tree)]
+    assert cli.main(["score", "r0001", "--card", "x", "--bench", "bench-a"]) == 0 and "--also" not in sent[-1][0] and len(sent) == 2
+    assert cli.main(["score", "r0001", "--card", "x", "--bench", "bench-a", "--", "--device", "cuda"]) == 1
+    assert "sets these itself" in capsys.readouterr().err and len(sent) == 2
+    (tree / "sandwm" / "models.py").write_text("WIDTH = 256\n")  # like every cloud job, it runs committed, published code
+    assert cli.main(["score", "r0001", "--card", "x", "--bench", "bench-a"]) == 1 and "not committed" in capsys.readouterr().err
 
 
 # --- fresh starts: a conversation is replaced by an empty one from time to time -----------------------------------

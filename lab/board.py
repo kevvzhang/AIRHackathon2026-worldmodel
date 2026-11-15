@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from pathlib import Path
 
 from .paths import git, locked, now, stamp
@@ -103,6 +104,14 @@ def coverage(board: Path) -> list[dict]:
             if m:
                 found.append({"id": m[1], "title": m[2], "priority": m[3].lower(), "status": m[4].strip().lower()})
     return found
+
+
+def coverage_age(board: Path) -> float | None:
+    """Hours since coverage.md was last changed; None if there is no such file."""
+    try:
+        return max(time.time() - (board / "coverage.md").stat().st_mtime, 0.0) / 3600
+    except OSError:
+        return None
 
 
 def tracks(board: Path) -> list[dict]:

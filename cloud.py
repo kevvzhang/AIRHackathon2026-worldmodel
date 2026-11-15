@@ -16,6 +16,9 @@ Datasets and runs live on a Modal volume named `sandwm`, as  data/<dataset>/  an
     # copy a finished run (curves, pictures, metrics, checkpoint) back to this machine
     uv run modal volume get sandwm runs/vit-k2 runs/
 
+    # score a trained run on further benchmarks on cloud CPUs (no GPU), into its card eval/probes.json
+    uv run modal run cloud.py::score --name vit-k2 --bench bench-basic-v1 --also "bench-a bench-b" --card probes
+
 `--bench bench-basic-v1` on train, sweep or reevaluate also scores the run on a benchmark dataset
 (`sandwm.scorecard`).  `modal run --detach` keeps a job alive if this terminal closes.  Environment
 variables read at launch: SANDWM_GPU, a comma-separated order of preference (default "L4,A10G,T4";
@@ -60,6 +63,7 @@ GPU = os.environ.get("SANDWM_GPU", "L4,A10G,T4").split(",")
 MAX_GPUS = int(os.environ.get("SANDWM_MAX_GPUS", "4"))
 RUN_SECONDS, CPU_SECONDS = 8 * 3600, 2 * 3600  # the longest one GPU job / one CPU job may run
 POLL = 10.0  # seconds between two looks at the lab's line for a GPU slot, and at a running job for its result
+SCORE_CPUS = 8  # cores of one scoring job (score_job): no GPU, and outside the lab's GPU budget
 if _limits:
     MAX_GPUS = max(_limits.max_concurrent_gpu_runs, 1)  # the lab's line decides what starts when (lab/budget.py)
     RUN_SECONDS, CPU_SECONDS = int(60 * _limits.gpu_minutes_per_run), int(60 * _limits.cpu_minutes_per_job)
@@ -144,6 +148,35 @@ def evaluate_job(name: str, horizon: int = 16, bench: str = "") -> dict:
             scorecard.main(["--run", str(run), "--bench", str(VOL / "data" / bench)])
     volume.commit()
     return {**summarise(run), **_cost(started)}
+
+
+@app.function(image=image, volumes={str(VOL): volume}, cpu=SCORE_CPUS, memory=16384, timeout=CPU_SECONDS)
+def score_job(name: str, bench: str, also: list[str], card: str, args: str = "") -> list[str]:
+    """Score runs/<name> on data/<bench>, and on each benchmark of `also`, into the card runs/<name>/eval/<card>.json.
+
+    `args` go to `python -m sandwm.scorecard` as they are.  An entry of `also` may be BENCH=PREFIX,... as the
+    scorecard takes it.  Returns the files it wrote, relative to the volume, for the launcher to copy home.
+    """
+    import torch
+
+    from sandwm import scorecard
+
+    def place(entry: str) -> str:
+        dataset, sep, prefixes = entry.partition("=")
+        if not (VOL / "data" / dataset / "meta.json").exists():
+            raise FileNotFoundError(f"data/{dataset} is not on the volume")
+        return f"{VOL / 'data' / dataset}{sep}{prefixes}"
+
+    torch.set_num_threads(SCORE_CPUS)  # the container reports its host's cores, not its own
+    run = VOL / "runs" / name
+    run.mkdir(parents=True, exist_ok=True)  # a "run" without a model is allowed: the world scored against itself (--twin)
+    before = {path: path.stat().st_mtime_ns for path in run.rglob("*") if path.is_file()}
+    with tagged(name):
+        scorecard.main(["--run", str(run), "--bench", place(bench), *(["--also", *map(place, also)] if also else []),
+                        "--card", card, *shlex.split(args)])
+    volume.commit()
+    return sorted(path.relative_to(VOL).as_posix() for path in run.rglob("*")
+                  if path.is_file() and before.get(path) != path.stat().st_mtime_ns)
 
 
 class _Tagged:
@@ -286,6 +319,52 @@ def sweep(spec: str, data: str = "basic64", horizon: int = 16, bench: str = "", 
     """Train several runs in parallel.  spec is  "name: train args; other-name: train args"."""
     train_runs([(name.strip(), args.strip()) for name, _, args in (item.partition(":") for item in spec.split(";") if item.strip())],
                data, horizon, bench, note, minutes)
+
+
+def score_run(name: str, bench: str, card: str, more: list[str], args: str = "", data: str = "", out: str = "", note: str = "") -> list[str]:
+    """Score runs/<name> on `bench` and the benchmarks `more` in the cloud; returns the files written, relative to the volume."""
+    also = " ".join(more)
+    jobs = lab_jobs()
+    if jobs:
+        try:
+            jobs.record("score", run=name, bench=bench, also=also, card=card, args=args, note=note)
+        except jobs.Refused as refusal:
+            raise SystemExit(f"not started: {refusal}")
+    have = {Path(entry.path).name for entry in volume.listdir("data")}
+    for dataset in dict.fromkeys(entry.partition("=")[0] for entry in [bench, *more]):
+        if dataset in have:
+            continue
+        local = Path(data) / dataset if data else None
+        if local is None or not (local / "meta.json").exists():
+            raise SystemExit(f"not started: data/{dataset} is not on the volume" + (f", and not in {data}" if data else ""))
+        print(f"uploading {local} to the volume as data/{dataset}", flush=True)
+        with volume.batch_upload() as batch:  # never overwrites: a dataset on the volume stays as it is
+            batch.put_directory(str(local), f"data/{dataset}")
+    print(f"scoring {name} on {', '.join([bench, *more])} into its card {card!r}, on {SCORE_CPUS} cloud CPUs", flush=True)
+    started = time.time()
+    written = score_job.remote(name, bench, more, card, args)
+    for rel in written if out else []:  # runs/<name>/eval/<card>.json, and pictures if the scorecard made any
+        target = Path(out).joinpath(*Path(rel).parts[1:])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as f:
+            for chunk in volume.read_file(rel):
+                f.write(chunk)
+    where = f"copied to {Path(out) / name}" if out else "on the volume"
+    print(f"\n{name}: scored in {(time.time() - started) / 60:.1f} min; {len(written)} file(s) written, {where}:")
+    for rel in written:
+        print(f"  {rel}")
+    return written
+
+
+@app.local_entrypoint()
+def score(name: str, bench: str, card: str, also: str = "", args: str = "", data: str = "", out: str = "", note: str = "") -> None:
+    """Score runs/<name> on benchmark datasets on cloud CPUs: `python -m sandwm.scorecard`, there instead of here.
+
+    `also` is a space-separated list of further benchmarks, `args` further scorecard options.  A benchmark that the
+    volume lacks is uploaded first from the folder `data`, if it is there.  The card and whatever else the job wrote
+    are copied into `out`/<name>/..., if `out` is given.  No GPU is used and nothing is booked: it costs cents.
+    """
+    score_run(name, bench, card, also.split(), args, data, out, note)
 
 
 @app.local_entrypoint()
