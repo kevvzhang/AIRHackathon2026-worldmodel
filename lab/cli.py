@@ -77,6 +77,8 @@ def check_name(name: str) -> str:
 def job_state(job: dict) -> str:
     if job["end"]:
         return job["end"]["status"]
+    if job.get("waiting"):  # booked, in line for a GPU slot (lab/budget.py)
+        return "waiting"
     age = (now() - parse_time(job["t"])).total_seconds() / 60
     return "running" if age < float(job["cap_min"]) + 10 else "lost"
 
@@ -86,7 +88,7 @@ def runs_text(lab: Lab, limit: int = 12) -> str:
     if not jobs:
         return "no cloud GPU job has been run yet"
     champion = boards.champion(lab.board)
-    rows = [("run", "kind", "by", "started", "min", "state", "gates", "note")]
+    rows = [("run", "kind", "by", "booked", "min", "state", "gates", "note")]
     for j in jobs:
         rows.append((j["run"] + (" *" if j["run"] == champion else ""), j.get("kind", "?"), j.get("by", "?"), ago(j["t"]),
                      f"{j['charged']:.1f}", job_state(j), scores.gate_line(lab.runs / j["run"], lab.board).replace("gates ", ""),
@@ -102,9 +104,10 @@ def budget_text(lab: Lab) -> str:
     by = ", ".join(f"{who} {minutes:.1f}" for who, minutes in sorted(s["by"].items())) or "nothing yet"
     on_tracks = ", ".join(f"{track} {minutes:.1f}" for track, minutes in sorted(s["tracks"].items())) or "nothing yet"
     since = f"\ncounted since the lab was started {ago(s['since'])}; before that: {s['before']:.1f} min" if s["since"] else ""
+    waiting = "; ".join(f"{j['run']} by {j.get('by', '?')}, booked {ago(j['t'])}" for j in s["waiting"]) or "none"
     return (f"GPU minutes: {s['spent']:.1f} spent or booked of {s['total']:g}  ({max(s['total'] - s['spent'], 0):.1f} left){since}\n"
-            f"limits: one job <= {s['per_run']:g} min, <= {s['concurrent']} at once\n"
-            f"running: {running}\nby agent: {by}\n"
+            f"limits: one job <= {s['per_run']:g} min, <= {s['concurrent']} running at once (more may be started: they wait in line)\n"
+            f"running: {running}\nwaiting for a GPU, next first: {waiting}\nby agent: {by}\n"
             f"research tracks: {sum(s['tracks'].values()):.1f} of the {s['tracks_cap']:g} min they may use together "
             f"({on_tracks}); that ceiling is inside the total above, not on top of it")
 
@@ -116,8 +119,9 @@ def status_text(lab: Lab, role: str) -> str:
     lines = [f"sandwm lab  {stamp()}  you are: {role}{stopped}"]
     running = ", ".join(f"{j['run']} ({j.get('by', '?')}, {ago(j['t'])})" for j in s["running"]) or "none"
     since = f" since the lab was started {ago(s['since'])}" if s["since"] else ""
+    waiting = f"; waiting for a GPU: {', '.join(j['run'] for j in s['waiting'])}" if s["waiting"] else ""
     lines.append(f"budget    {s['spent']:.1f} of {s['total']:g} GPU min spent or booked{since}; one job <= {s['per_run']:g} min, "
-                 f"<= {s['concurrent']} at once; running: {running}")
+                 f"<= {s['concurrent']} at once; running: {running}{waiting}")
 
     ahead = git("rev-list", "--count", f"main..{TRUNK}", cwd=lab.home, check=False)
     lines.append(f"trunk     {TRUNK} @ {git('log', '-1', '--format=%h %s', TRUNK, cwd=lab.home, check=False)}"

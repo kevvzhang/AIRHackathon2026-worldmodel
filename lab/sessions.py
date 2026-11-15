@@ -90,8 +90,10 @@ def request_file(board: Path, role: str) -> Path:
 
 
 def busy(board: Path, role: str) -> list[str]:
-    """The cloud GPU jobs `role` has running: they would die with its conversation."""
-    return [job["run"] for job in Ledger(board).running() if job.get("by") == role]
+    """The cloud GPU jobs `role` has running or waiting in line for a GPU: they would die with its conversation."""
+    ledger = Ledger(board)
+    jobs = ledger.jobs()
+    return [job["run"] for job in ledger.running(jobs) + ledger.waiting(jobs) if job.get("by") == role]
 
 
 def describe(c: Conversation) -> str:
@@ -154,7 +156,8 @@ def ask(lab: Lab, role: str, text: str) -> str:
         raise LabError(f"this conversation is only {c.age * 60:.0f} minutes old; a fresh start is for one that has run for a while")
     running = busy(board, role)
     if running:
-        raise LabError(f"still running: {', '.join(running)}. Ending this conversation would stop {'it' if len(running) == 1 else 'them'}. "
+        raise LabError(f"still running or waiting for a GPU: {', '.join(running)}. Ending this conversation would stop "
+                       f"{'it' if len(running) == 1 else 'them'}. "
                        "Wait, record the results, then ask again.")
     tree = lab.worktree(role)
     dirty = git("status", "--porcelain", "--untracked-files=no", cwd=tree, check=False) if tree.exists() else ""

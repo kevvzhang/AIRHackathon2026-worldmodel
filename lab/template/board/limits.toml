@@ -1,10 +1,10 @@
 # The lab's spending limits.  This file is the human's: agents read it and never change it.
 # Every cloud GPU job is booked against these numbers before it starts (lab/budget.py) and is
-# refused if it does not fit.  Raise gpu_minutes_total to give the lab more to spend.
+# refused if it does not fit; a job beyond max_concurrent_gpu_runs is not refused but waits in line.  Raise gpu_minutes_total to give the lab more to spend.
 
 gpu_minutes_total = 300        # all agents together, per start of the lab: launch.ps1 from a standstill begins a new count (about $6-8 on L4/A10G each)
 gpu_minutes_per_run = 20       # one job: training + evaluation + scorecard; the cloud kills it after this
-max_concurrent_gpu_runs = 2    # the Modal workspace's GPU limit is shared with your other projects
+max_concurrent_gpu_runs = 2    # GPU jobs running at once, all agents together; more may be started and wait in line. Modal's Starter plan allows a workspace 10 GPUs at once, your other projects included
 cpu_minutes_per_job = 20       # one dataset generation job on cloud CPUs (cents)
 gpu_minutes_tracks = 100       # of the total: the most all research tracks (runs named t001-..., t002-...) may use together
 session_hours = 6              # an agent's conversation is replaced by an empty one after this many hours; 0 = never

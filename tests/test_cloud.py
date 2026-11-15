@@ -26,15 +26,27 @@ def test_log_lines_are_tagged_with_the_run_name(capsys):
     assert capsys.readouterr().out == "[run-a] one\n[run-a] two\n[run-a] three four\n"
 
 
+class FakeCall:
+    """Stands in for a Modal function call: `get` gives the prepared result, or raises it if it is an exception."""
+
+    def __init__(self, result):
+        self.result = result
+
+    def get(self, timeout=None):
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
 class FakeJob:
-    """Stands in for a Modal function: `starmap` hands back prepared results instead of running anything."""
+    """Stands in for a Modal function: `spawn` hands back a call with a prepared result instead of running anything."""
 
     def __init__(self, results):
-        self.results, self.calls = results, None
+        self.results, self.calls = results, []
 
-    def starmap(self, calls, return_exceptions=False):
-        self.calls = list(calls)
-        yield from self.results
+    def spawn(self, *call):
+        self.calls.append(call)
+        return FakeCall(self.results[len(self.calls) - 1])
 
 
 def test_launch_books_and_settles_every_job(monkeypatch, capsys):
@@ -42,6 +54,13 @@ def test_launch_books_and_settles_every_job(monkeypatch, capsys):
 
     class Booking:
         minutes, settled, closed = 5.0, [], False
+
+        def poll(self, every):  # the lab has a GPU slot for both at once
+            news, Booking.news = getattr(Booking, "news", {"a": "go", "b": "go"}), {}
+            return news
+
+        def waits(self):
+            return ""
 
         def done(self, name, result):
             self.settled.append((name, result))
@@ -84,7 +103,7 @@ def test_launch_does_not_start_what_the_budget_refuses(monkeypatch):
     job = FakeJob([])
     with pytest.raises(SystemExit, match="not started: GPU budget"):
         cloud.launch(job, ["a"], [("a",)], "train", 0.0, [{"run": "a"}])
-    assert job.calls is None, "nothing may reach the cloud after a refusal"
+    assert job.calls == [], "nothing may reach the cloud after a refusal"
 
 
 @pytest.mark.filterwarnings("ignore:The .* function is executing locally")

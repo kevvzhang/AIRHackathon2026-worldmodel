@@ -78,7 +78,7 @@ The agents reread these files in `.lab\board\` at every tick. Edit one, then run
 |------------------|---------|
 | `gpu_minutes_total` | the GPU minutes the lab may spend per start (see "Start and stop") |
 | `gpu_minutes_per_run` | the longest one job may run |
-| `max_concurrent_gpu_runs` | jobs at once |
+| `max_concurrent_gpu_runs` | GPU jobs running at once; a job started beyond that waits in line and starts by itself. Keep it at or below what Modal allows your workspace (10 GPUs on the Starter plan, shared with your other projects) |
 | `gpu_minutes_tracks` | the part of the total that research tracks may use |
 | `cpu_minutes_per_job` | the longest one data-generation job may run |
 | `session_hours` | hours before an agent's conversation is replaced by an empty one (0 = never) |

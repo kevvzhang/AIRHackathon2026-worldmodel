@@ -3,6 +3,10 @@
 cloud.py calls this from its local entry points, so every documented way of starting a GPU job
 passes through the ledger.  Where no lab has been set up, `book` returns None and nothing is
 enforced.
+
+Booked is not started.  The lab runs a limited number of GPU jobs at once (lab/budget.py), and a job
+booked beyond that waits in line.  The launcher asks `Booking.poll` every few seconds which of its
+runs may start, and starts each one when it is told "go".
 """
 
 from __future__ import annotations
@@ -14,6 +18,8 @@ from . import board as boards
 from . import sessions
 from .budget import BEAT_MIN, Ledger, Limits, Refused  # noqa: F401  (Refused is part of this module's interface)
 from .paths import Lab, LabError, current_role, git
+
+POLL = 10.0  # seconds between two looks at the line by a launcher that has runs waiting for a GPU slot
 
 
 def find(cwd=None) -> Lab | None:
@@ -44,18 +50,71 @@ def _save(lab: Lab, message: str) -> None:
 class Booking:
     """GPU minutes booked for a set of runs.  Call `done` as each reports back and `close` when all are in.
 
+    A run may start only once `poll` has said "go" for it: until then it waits in line for a GPU slot.
+
     While it is open it writes a heartbeat for each job that has not reported back, so that the ledger can tell a
-    job whose launcher was killed from one that is still running (lab/budget.py).
+    job whose launcher was killed from one that is still running or waiting (lab/budget.py).
     """
 
     def __init__(self, lab: Lab, ledger: Ledger, jobs: dict[str, str], minutes: float, limit: float) -> None:
         self.lab, self.ledger, self.jobs = lab, ledger, dict(jobs)
         self.minutes, self.limit = minutes, limit  # booked per run; the most the cloud lets one job run
-        self.started = time.time()
+        self.booked = time.time()
+        self.line = list(self.jobs)  # the runs that have no GPU slot yet, in the order they were booked
+        self.began: dict[str, float] = {}  # run -> when it got its slot
+        self.news: dict[str, str] = {}  # what `poll` has not handed out yet
+        self.asked = 0.0
         self.stopped, self.ids = threading.Event(), list(self.jobs.values())
         self._beat()
+        self._look(save=False)  # the runs for which a slot was free at booking have it already
         self.beating = threading.Thread(target=self._beating, name="lab-heartbeat", daemon=True)
         self.beating.start()
+
+    def _look(self, save: bool = True) -> None:
+        """Ask the ledger which of the waiting runs may start now."""
+        self.asked = time.perf_counter()
+        try:
+            states = self.ledger.admit([self.jobs[run] for run in self.line])
+        except LabError as err:  # the lock is busy, or limits.toml is being edited: the next look will do
+            print(f"(could not look at the line for a GPU slot: {err})", flush=True)
+            return
+        changed = [run for run in self.line if states[self.jobs[run]] != "wait"]
+        for run in changed:
+            state = states[self.jobs[run]]
+            self.line.remove(run)
+            self.news[run] = state
+            if state == "go":
+                self.began[run] = time.time()
+            else:  # it ended without starting, and the ledger has its end line
+                self.jobs.pop(run)
+        if changed and save:  # the ledger has new lines: a run has started after waiting, or has left the line
+            _save(self.lab, f"ledger: {', '.join(changed)} left the line for a GPU slot")
+
+    def poll(self, every: float = POLL) -> dict[str, str]:
+        """What is new for the runs that waited: {run: "go"} for each that may start now, {run: "gone"} for each that
+        lost its place without starting (the lab was stopped, or this launcher was silent for minutes).  The first
+        call names the runs that had a slot from the start.  It looks at the ledger at most once in `every` seconds.
+        """
+        if self.line and time.perf_counter() - self.asked >= every:
+            self._look()
+        news, self.news = self.news, {}
+        return news
+
+    def waits(self) -> str:
+        """A sentence for the launcher's output about the runs that have to wait, or "" if none does."""
+        if not self.line:
+            return ""
+        try:
+            s = self.ledger.summary()
+        except LabError:
+            return ""
+        ahead = [j["job"] for j in s["waiting"]]
+        first = self.jobs[self.line[0]]
+        before = ahead.index(first) if first in ahead else 0
+        return (f"waiting in line for a GPU: {', '.join(self.line)}. The lab runs at most {s['concurrent']} GPU job(s) at once; "
+                f"{len(s['running'])} are running" + (f" and {before} other(s) wait ahead" if before else "") + ". "
+                "Each starts by itself when a slot is free, first come, first served. Keep this command running and "
+                "do not start the run a second time: its GPU minutes are booked.")
 
     def _beat(self) -> None:
         for job in list(self.jobs.values()):
@@ -73,10 +132,13 @@ class Booking:
         job = self.jobs.pop(run, None)
         if job is None:
             return
-        if isinstance(result, dict) and "gpu min" in result:
+        if run in self.line:  # it never got a GPU slot, so there is nothing to pay
+            self.line.remove(run)
+            self.ledger.settle(job, 0.0, "dropped", error="its launcher ended while the job waited for a GPU; it never started")
+        elif isinstance(result, dict) and "gpu min" in result:
             self.ledger.settle(job, result["gpu min"], "ok", gpu=str(result.get("gpu", "?")))
-        else:  # failed or cut off: it used at most the time since launch, and at most what the cloud allows one job
-            elapsed = (time.time() - self.started) / 60
+        else:  # failed or cut off: it used at most the time since it got its slot, and at most what the cloud allows one job
+            elapsed = (time.time() - self.began.get(run, self.booked)) / 60
             self.ledger.settle(job, min(elapsed, self.limit), "failed", error=repr(result)[:300])
 
     def close(self) -> None:
@@ -92,7 +154,8 @@ class Booking:
 def book(runs: list[dict], kind: str = "train", minutes: float = 0.0, cwd=None) -> Booking | None:
     """Book GPU time for `runs` (dicts with a "run" name and anything worth recording).
 
-    Returns None where there is no lab.  Raises Refused when the jobs may not start.
+    Returns None where there is no lab.  Raises Refused when the jobs may not be booked (the budget, the
+    per-run limit, a used name, STOP).  A booked run starts when `Booking.poll` says "go" for it.
     """
     lab = find(cwd)
     if lab is None:

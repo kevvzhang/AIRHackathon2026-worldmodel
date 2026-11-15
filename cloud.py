@@ -23,7 +23,9 @@ also L40S, A100, H100), and SANDWM_MAX_GPUS (default 4), the most GPUs a sweep m
 
 Once the agent lab exists (`python -m lab setup`, see lab/README.md), every GPU job started here
 is first booked against the lab's budget and refused if it does not fit, and no job may run
-longer than the lab's per-run limit.
+longer than the lab's per-run limit.  The lab also runs a limited number of GPU jobs at once, all
+launches together (`max_concurrent_gpu_runs`, in place of SANDWM_MAX_GPUS): a job beyond that
+waits in line inside its launch command and starts by itself when a slot is free.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ import contextlib
 import os
 import shlex
 import sys
+import time
 from importlib.metadata import version
 from pathlib import Path
 
@@ -56,8 +59,9 @@ VOL = Path("/vol")
 GPU = os.environ.get("SANDWM_GPU", "L4,A10G,T4").split(",")
 MAX_GPUS = int(os.environ.get("SANDWM_MAX_GPUS", "4"))
 RUN_SECONDS, CPU_SECONDS = 8 * 3600, 2 * 3600  # the longest one GPU job / one CPU job may run
+POLL = 10.0  # seconds between two looks at the lab's line for a GPU slot, and at a running job for its result
 if _limits:
-    MAX_GPUS = min(MAX_GPUS, _limits.max_concurrent_gpu_runs)
+    MAX_GPUS = max(_limits.max_concurrent_gpu_runs, 1)  # the lab's line decides what starts when (lab/budget.py)
     RUN_SECONDS, CPU_SECONDS = int(60 * _limits.gpu_minutes_per_run), int(60 * _limits.cpu_minutes_per_job)
 
 # Same package versions as the local environment; on Linux the default torch wheel includes CUDA.
@@ -176,6 +180,54 @@ def report(names: list[str], results: list) -> None:
             print(f"{name} FAILED: {result!r}")
 
 
+def fly(job, names: list[str], calls: list[tuple], booking=None, every: float | None = None) -> list:
+    """Run one cloud job per entry of `calls` and return what each gave, in the same order: its result, or the
+    exception it ended with.
+
+    With a booking from the lab, a job starts when the lab has a GPU slot for it (`booking.poll`), and its minutes
+    are settled the moment it reports back, which frees the slot for the next in line.  Without a booking all start
+    at once, and Modal runs at most MAX_GPUS of them at a time.
+    """
+    every = POLL if every is None else every  # seconds between two looks at the line
+    waiting, flying, results = dict(zip(names, calls)), {}, {}
+    first = True
+    while waiting or flying:
+        for name, state in (booking.poll(every) if booking else dict.fromkeys(waiting, "go")).items():
+            call = waiting.pop(name)
+            if state != "go":
+                results[name] = RuntimeError("not started: it left the lab's line for a GPU (the lab was stopped, or this "
+                                             "launcher was silent for minutes); nothing was charged")
+                print(f"{name}: {results[name]}", flush=True)
+                continue
+            if not first:
+                print(f"{name}: a GPU slot is free; starting", flush=True)
+            try:
+                flying[name] = job.spawn(*call)
+            except Exception as err:  # it could not even be handed to the cloud
+                results[name] = err
+                if booking:
+                    booking.done(name, err)
+        first = False
+        if not flying:
+            if waiting:
+                time.sleep(every)
+            continue
+        patience = max((every if waiting else 6 * every) / len(flying), min(every, 1.0))  # seconds to wait for each result in turn
+        for name, call in list(flying.items()):
+            asked = time.perf_counter()
+            try:
+                result = call.get(timeout=patience)
+            except Exception as err:
+                if type(err) is TimeoutError and time.perf_counter() - asked >= patience / 2:
+                    continue  # Modal's "not finished yet"; a TimeoutError the job itself raised would come back at once
+                result = err
+            del flying[name]
+            results[name] = result
+            if booking:
+                booking.done(name, result)
+    return [results[name] for name in names]
+
+
 def launch(job, names: list[str], calls: list[tuple], kind: str, minutes: float, record: list[dict]) -> None:
     """Run one cloud GPU job per entry of `calls`, side by side, inside the lab's budget if there is a lab."""
     jobs = lab_jobs()
@@ -189,12 +241,12 @@ def launch(job, names: list[str], calls: list[tuple], kind: str, minutes: float,
             raise SystemExit(f"not started: {refusal}")
     print(f"launching {len(calls)} {kind} job(s) on {'/'.join(GPU)} (at most {MAX_GPUS} at a time): {', '.join(names)}"
           + (f"; {booking.minutes:g} GPU min booked for each" if booking else ""), flush=True)
+    waits = booking.waits() if booking else ""
+    if waits:
+        print(waits, flush=True)
     results = []
     try:
-        for name, result in zip(names, job.starmap(calls, return_exceptions=True)):
-            results.append(result)
-            if booking:
-                booking.done(name, result)
+        results = fly(job, names, calls, booking)
     finally:
         if booking:
             booking.close()  # anything that did not report back is charged for the time it had

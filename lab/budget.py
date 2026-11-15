@@ -10,6 +10,12 @@ minute.  A cloud job ends with its launcher, so when the heartbeat stops for goo
 killed, its tab closed) the job is "cut": charged up to its last heartbeat plus a few minutes, and
 no longer counted as running.  The next booking writes its end line.
 
+At most `max_concurrent_gpu_runs` jobs run at once.  A job booked beyond that is not refused: it
+gets a "queue" line instead of a "start" line and waits in line, its minutes booked.  Its launcher
+asks every few seconds (`admit`), and when a job ends the first in line gets its "start" line: first
+come, first served, whoever booked it.  A waiting job whose launcher stops beating is "dropped": it
+leaves the line and costs nothing.
+
 The total is counted per budget period.  A period ends when the human starts the lab again from a
 standstill (lab/launch.ps1, or `python -m lab budget --new`): a "period" line goes into the ledger
 and the count begins at zero, while the jobs of earlier periods stay on record.
@@ -29,6 +35,7 @@ from .paths import LabError, locked, now, parse_time, stamp
 BEAT_MIN = 1.0  # a launcher writes the heartbeat of its jobs this often (lab/jobs.py)
 GONE_MIN = 5.0  # a heartbeat this old means the launcher is gone, and the cloud has stopped its jobs
 STOP_MIN = 5.0  # charged after the last heartbeat: Modal stopped r0061-r0064 about 2 minutes after their launchers died
+DERIVED = ("end", "period", "charged", "waiting")  # what `Ledger.jobs` adds to a job's own ledger line
 
 NO_WAY_AROUND = ("Do not look for another way to start it. Carry on with work that needs no GPU; if more budget would "
                  "change what the lab can achieve, say so once to the human:  uv run python -m lab msg human ...")
@@ -104,8 +111,14 @@ class Ledger:
             return None
 
     def _cut(self, start: dict) -> dict | None:
-        """The end line of a job whose launcher has stopped beating; None if it still beats or never did."""
+        """The end line of a job whose launcher has stopped beating; None if it still beats, or runs and never did."""
         last = self.last_beat(start["job"])
+        if start.get("event") == "queue":  # it waits in line: without a launcher it will never start, and it has cost nothing
+            last = last or parse_time(start["t"])
+            if now() - last < timedelta(minutes=GONE_MIN):
+                return None
+            return {"event": "end", "job": start["job"], "t": stamp(last), "gpu_min": 0.0, "status": "dropped",
+                    "error": f"its launcher stopped at {stamp(last)} while the job waited for a GPU; it never started"}
         if last is None or now() - last < timedelta(minutes=GONE_MIN):
             return None
         began, cap = parse_time(start["t"]), float(start["cap_min"])
@@ -114,21 +127,30 @@ class Ledger:
                 "status": "cut", "error": f"its launcher stopped at {stamp(last)} (killed, or its tab closed); the cloud ends a job with its launcher"}
 
     def jobs(self) -> list[dict]:
-        """Every GPU job in the order it started: its start line, plus `end` (its end line or None), `charged` minutes
-        and `period`, the budget period it was booked in (0 until the first `new_period`, then 1, ...).  A job whose
-        launcher has died gets the end line `settle_cut` would write, marked "unsettled" until it is written."""
+        """Every GPU job in the order it started, the ones that still wait for a GPU slot last, in line order.
+
+        Each is its ledger line (the "start" line, or the "queue" line of a job that has not started) plus `end` (its
+        end line or None), `charged` minutes, `waiting` (in line for a slot) and `period`, the budget period it counts
+        in (0 until the first `new_period`, then 1, ...): the one it started in, or the current one while it waits.
+        A job whose launcher has died gets the end line `settle_cut` would write, marked "unsettled" until it is written.
+        """
         events = self.events()
         ends = {e["job"]: e for e in events if e.get("event") == "end"}
-        period, found = 0, []
+        period, found = 0, {}
         for e in events:
             if e.get("event") == "period":
                 period += 1
-            elif e.get("event") == "start":
-                end = ends.get(e["job"])
-                if end is None and (cut := self._cut(e)):
-                    end = {**cut, "unsettled": True}
-                found.append({**e, "end": end, "period": period, "charged": float(end["gpu_min"] if end else e["cap_min"])})
-        return found
+            elif e.get("event") in ("queue", "start"):
+                found.pop(e["job"], None)  # a job that waited is listed where it started
+                found[e["job"]] = {**e, "period": period}
+        for job in found.values():
+            end = ends.get(job["job"])
+            if end is None and (cut := self._cut(job)):
+                end = {**cut, "unsettled": True}
+            waiting = job["event"] == "queue" and end is None
+            job.update(end=end, charged=float(end["gpu_min"] if end else job["cap_min"]), waiting=waiting,
+                       period=period if waiting else job["period"])
+        return list(found.values())
 
     def _write_cut(self, jobs: list[dict]) -> list[str]:
         """Write the end lines of the jobs that were cut; the caller holds the lock."""
@@ -175,16 +197,55 @@ class Ledger:
                 f.write(json.dumps({"event": "period", "t": stamp(), "by": by, "closed_min": round(used, 2)}) + "\n")
             return used
 
-    def running(self) -> list[dict]:
-        """Jobs with no end line that are young enough to still be running."""
+    def running(self, jobs: list[dict] | None = None) -> list[dict]:
+        """Jobs that have started, have no end line and are young enough to still be running."""
         t = now()
-        return [j for j in self.jobs() if j["end"] is None and t - parse_time(j["t"]) < timedelta(minutes=float(j["cap_min"]) + 10)]
+        return [j for j in (self.jobs() if jobs is None else jobs)
+                if j["end"] is None and not j["waiting"] and t - parse_time(j["t"]) < timedelta(minutes=float(j["cap_min"]) + 10)]
+
+    def waiting(self, jobs: list[dict] | None = None) -> list[dict]:
+        """Jobs that are booked and wait in line for a GPU slot, the next to start first."""
+        return [j for j in (self.jobs() if jobs is None else jobs) if j["waiting"]]
+
+    def admit(self, mine: list[str]) -> dict[str, str]:
+        """Give the free GPU slots to the first jobs in line, and say where each job of `mine` stands.
+
+        "go": it has its slot (it is started in the ledger: launch it now).  "wait": others run, or wait ahead of
+        it.  "gone": it ended without starting (its launcher was taken for dead, or the human stopped the lab).
+        A launcher calls this every few seconds while it has jobs in line.  First come, first served: a slot goes
+        to the first in line only, and a job gets its start line only when its own launcher asks, so the launcher
+        is there to start it.
+        """
+        with locked(self.lock):
+            jobs = self.jobs()
+            self._write_cut(jobs)
+            line = self.waiting(jobs)
+            stopped = (self.board / "STOP").exists()
+            room = 0 if stopped else max(self.limits.max_concurrent_gpu_runs - len(self.running(jobs)), 0)
+            go = [j for j in line[:room] if j["job"] in mine]
+            drop = [j for j in line if j["job"] in mine] if stopped else []
+            t = stamp()
+            if go or drop:
+                with self.path.open("a", encoding="utf-8", newline="\n") as f:
+                    for j in go:  # the start line repeats what was booked, so that it reads like any other
+                        f.write(json.dumps({**{k: v for k, v in j.items() if k not in DERIVED}, "event": "start", "t": t,
+                                            "queued": j["t"]}) + "\n")
+                    for j in drop:
+                        f.write(json.dumps({"event": "end", "job": j["job"], "t": t, "gpu_min": 0.0, "status": "dropped",
+                                            "error": "the human stopped the lab while the job waited for a GPU; it never started"}) + "\n")
+            changed = {j["job"] for j in go + drop}
+            has_slot = {j["job"] for j in jobs if j["end"] is None and not j["waiting"]} | {j["job"] for j in go}
+            in_line = {j["job"] for j in line} - changed
+            return {job: "go" if job in has_slot else "wait" if job in in_line else "gone" for job in mine}
 
     def reserve(self, runs: list[dict], kind: str = "train", minutes: float = 0.0) -> list[str]:
         """Book up to `minutes` (0 = the per-run limit) for each run, or raise Refused.
 
         Each entry of `runs` needs a "run" name and may carry anything else worth recording
         (data, bench, args, note, by, commit).  Returns one job id per run, for `settle`.
+
+        Booked is not yet started: a job for which no GPU slot is free waits in line, and `admit` says when
+        it may start.  The minutes are booked either way.
         """
         names = [r["run"] for r in runs]
         with locked(self.lock):
@@ -214,16 +275,15 @@ class Ledger:
                     raise Refused(f"track budget: research tracks have used or booked {used:.1f} of the {limits.tracks_cap:g} GPU "
                                   f"minutes they may use together, so {len(on_tracks)} more track job(s) of up to {cap:g} min do "
                                   "not fit. The rest of the budget is the main line's. Tell the research agent; do not rename the run.")
-            busy = self.running()
-            if len(busy) + len(names) > limits.max_concurrent_gpu_runs:
-                raise Refused(f"{len(busy)} GPU job(s) are running ({', '.join(j['run'] for j in busy)}) and at most "
-                              f"{limits.max_concurrent_gpu_runs} may run at once. Start this one when one of them has finished.")
+            # Slots: the first `room` start now, the rest wait in line.  Nobody jumps the line: while others wait, all of these do.
+            room = 0 if self.waiting(jobs) else max(limits.max_concurrent_gpu_runs - len(self.running(jobs)), 0)
             t = stamp()
             counts = {name: sum(j["run"] == name for j in jobs) for name in names}
             ids = [f"{name}#{counts[name] + 1}" for name in names]
             with self.path.open("a", encoding="utf-8", newline="\n") as f:
-                for run, job in zip(runs, ids):
-                    f.write(json.dumps({"event": "start", "job": job, "kind": kind, "t": t, "cap_min": cap, **run}) + "\n")
+                for i, (run, job) in enumerate(zip(runs, ids)):
+                    f.write(json.dumps({"event": "start" if i < room else "queue", "job": job, "kind": kind, "t": t,
+                                        "cap_min": cap, **run}) + "\n")
             return ids
 
     def settle(self, job: str, gpu_min: float, status: str, at: str | None = None, **extra) -> None:
@@ -253,6 +313,7 @@ class Ledger:
             if track_of(j["run"]):
                 tracks[track_of(j["run"])] = tracks.get(track_of(j["run"]), 0.0) + j["charged"]
         return {"spent": sum(j["charged"] for j in counted), "total": limits.gpu_minutes_total, "per_run": limits.gpu_minutes_per_run,
-                "concurrent": limits.max_concurrent_gpu_runs, "running": self.running(), "by": by, "jobs": len(jobs),
+                "concurrent": limits.max_concurrent_gpu_runs, "running": self.running(jobs), "waiting": self.waiting(jobs),
+                "by": by, "jobs": len(jobs),
                 "tracks": tracks, "tracks_cap": limits.tracks_cap, "period": number, "since": since,
                 "before": sum(j["charged"] for j in jobs if j["period"] < number)}

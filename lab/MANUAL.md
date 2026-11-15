@@ -150,6 +150,15 @@ scores the run on the frozen benchmark (`sandwm.scorecard`: about thirty named c
 the pictures in `eval\bench\`, updates `gaps.md`, and adds a check for every new way of being
 wrong, so a later run that breaks it again is caught by the numbers.
 
+Modal lets a workspace use a limited number of GPUs at once (10 on the Starter plan, your other
+projects included), so the lab keeps a line. At most `max_concurrent_gpu_runs` jobs run at once,
+all agents together. A job started beyond that is booked like any other but not sent to Modal:
+its command waits, asks the ledger every 10 seconds, and starts the job when a slot is free,
+first come, first served. `lab status`, `lab budget` and `lab runs` show what waits. There is
+no separate process to keep alive: the line is in `ledger.jsonl` ("queue" lines), and a waiting
+job whose command dies leaves it after 5 minutes without having cost anything. Lower the number
+to leave GPUs for your other projects, or set it to 0 to hold every new job in line for a while.
+
 Passing every gate only says the model is right where the benchmarks look. So eval keeps a
 second list, `coverage.md`: situations the benchmarks do not contain (very long rollouts,
 intermittent actions, messy scenes), properties no check measures, numbers that cannot be
@@ -161,6 +170,7 @@ fails there becomes an ordinary gap. `lab status` shows how many entries are sti
 | rule | enforced by |
 |------|-------------|
 | total GPU minutes, minutes per job, jobs at once | `lab/budget.py`, called by every entry point of `cloud.py` before anything starts; a job that never reports back is charged its full booking, unless its launcher's heartbeat stopped: then it is "cut" and charged up to the last heartbeat plus 5 minutes |
+| at most `max_concurrent_gpu_runs` GPU jobs run at once | the line in `lab/budget.py`: a job booked beyond that waits inside its launch command (`cloud.py`) and gets the next free slot, first come, first served |
 | one job cannot run longer than the per-job limit | Modal's function timeout, set from `limits.toml` |
 | stop | the guard hook refuses every tool call but reads while `STOP` is on the board; `lab stop` also stops the `sandwm` app on Modal |
 | agents write only in their worktree, their own board files and the shared folders | the guard hook (`lab/guard.py`, a PreToolUse hook in each worktree's `.claude\settings.local.json`), for the file-editing tools |
@@ -216,7 +226,9 @@ Usage and billing in the Modal dashboard.
   receiving session. If the message is not delivered, the file is found at the next tick, which
   can now be up to 2 hours away.
 - All three agents share this laptop's CPU and one Modal GPU quota (also used by your other
-  projects), so jobs can queue.
+  projects). The lab's own line keeps its jobs at or below `max_concurrent_gpu_runs`, but it
+  cannot see what your other projects use: if together they need more than Modal allows, Modal
+  holds the extra jobs back itself, and the lab counts such a job as running while it waits there.
 - Fresh starts end the session's process abruptly; there is no gentler way from outside. They
   have been tested with a stand-in program in place of Claude Code, not yet with a real
   session: watch the first one. A background command the agent forgot about dies with the

@@ -87,8 +87,8 @@ carefully it retests one.
 
 - **Work in batches.** Do not send one thing round the whole circle and wait for it to come
   back. Data offers several generators or mixtures at once. Train runs several different
-  questions side by side, as many as `limits.toml` allows at once, with the next ones ready to
-  start when a slot frees up. Eval reports every gap it sees in a run, not only the worst, so
+  questions side by side: it starts the whole batch, the lab runs as many of them at once as
+  `limits.toml` allows, and the rest wait in line and start by themselves. Eval reports every gap it sees in a run, not only the worst, so
   that data and train can work on different gaps at the same time.
 - **Screen short, confirm long.** Most ideas can be judged from a short run or a small dataset.
   Only what survives screening gets a full-length run. Screen on the model the answer is for:
@@ -223,7 +223,8 @@ agent, as a **track**.
 1. **Money.** Cloud GPU jobs are started only with `uv run python -m lab train`. It books the job
    against the budget in `limits.toml` and refuses a job that does not fit. The budget is counted
    from the last time the human started the lab (`lab status` says since when), and only the
-   human begins a new count. When refused: stop
+   human begins a new count. A job started while every GPU slot is taken is not refused: it
+   waits in line and starts by itself, so never start it a second time. When refused: stop
    launching, do the work that needs no GPU, and tell the human once if more budget would change
    what the lab can achieve. Never look for another route. Datasets are simulated on cloud CPUs
    with `uv run python -m lab generate`: that costs cents, not nothing, so no dataset is larger

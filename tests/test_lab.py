@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -73,8 +74,6 @@ def test_a_job_whose_launcher_died_is_cut_and_charged_until_its_last_heartbeat(b
 def test_the_budget_refuses_what_does_not_fit(board):
     ledger = Ledger(board)
     a, b = ledger.reserve([{"run": "a01"}, {"run": "b01"}])
-    with pytest.raises(Refused, match="at most 2 may run at once"):
-        ledger.reserve([{"run": "c01"}])
     ledger.settle(a, 20, "ok")
     ledger.settle(b, 20, "failed")
     assert ledger.spent() == 40
@@ -88,6 +87,104 @@ def test_the_budget_refuses_what_does_not_fit(board):
     ledger.settle(c, 3, "ok")
     assert ledger.spent() == 43
     assert len(ledger.events()) == 6  # nothing that was refused left a line
+
+
+def test_jobs_beyond_the_gpu_slots_wait_in_line_first_come_first_served(board, monkeypatch):
+    ledger = Ledger(board)  # two may run at once
+    a, b, c = ledger.reserve([{"run": name, "by": "train"} for name in ("a01", "b01", "c01")], minutes=10)
+    assert [j["run"] for j in ledger.running()] == ["a01", "b01"] and [j["run"] for j in ledger.waiting()] == ["c01"]
+    assert ledger.spent() == 30, "a waiting job has its minutes booked"
+    assert cli.job_state(ledger.jobs()[-1]) == "waiting" and ledger.summary()["waiting"][0]["job"] == c
+    assert ledger.admit([a, c]) == {a: "go", c: "wait"}
+    (d,) = ledger.reserve([{"run": "d01", "by": "data"}], minutes=10)  # another launcher: behind c01
+    ledger.settle(a, 4, "ok")
+    (e,) = ledger.reserve([{"run": "e01", "by": "eval"}], minutes=10)  # a slot is free, but others are in line: no jumping it
+    assert [j["run"] for j in ledger.waiting()] == ["c01", "d01", "e01"]
+    assert ledger.admit([d, e]) == {d: "wait", e: "wait"}, "the free slot is c01's, and it is taken when c01's launcher asks"
+    assert ledger.admit([c]) == {c: "go"} and ledger.admit([c]) == {c: "go"}
+    started = next(j for j in ledger.jobs() if j["job"] == c)
+    assert not started["waiting"] and started["queued"] and started["by"] == "train" and started["cap_min"] == 10
+    assert [j["run"] for j in ledger.running()] == ["b01", "c01"] and ledger.admit([d]) == {d: "wait"}
+    ledger.settle(b, 5, "ok")
+    assert ledger.admit([e]) == {e: "wait"} and ledger.admit([d]) == {d: "go"}
+    ledger.settle(c, 5, "ok")
+    assert ledger.admit([e]) == {e: "go"} and ledger.waiting() == []
+    assert [j["run"] for j in ledger.jobs()] == ["a01", "b01", "c01", "d01", "e01"] and ledger.spent() == 4 + 5 + 5 + 10 + 10
+
+    (f,) = ledger.reserve([{"run": "f01"}], minutes=10)  # d01 and e01 run, so it waits; then its launcher dies
+    ledger.beat(f)
+    later = now() + timedelta(minutes=12)
+    monkeypatch.setattr(budget, "now", lambda: later)
+    gone = next(j for j in ledger.jobs() if j["job"] == f)
+    assert gone["end"]["status"] == "dropped" and gone["charged"] == 0 and not gone["waiting"] and cli.job_state(gone) == "dropped"
+    assert ledger.admit([f]) == {f: "gone"} and ledger.waiting() == [], "it has left the line and blocks nobody"
+    assert [e["job"] for e in ledger.events() if e.get("status") == "dropped"] == [f], "written for good, once"
+    (g,) = ledger.reserve([{"run": "g01"}], minutes=10)  # one that never beat counts from the moment it was booked
+    assert ledger.admit([g]) == {g: "gone"}
+    monkeypatch.setattr(budget, "now", now)
+
+    (h,) = ledger.reserve([{"run": "h01"}], minutes=10)
+    assert ledger.admit([h]) == {h: "wait"}
+    (board / "STOP").write_text("stop")  # the human stops the lab: what waits will not start
+    assert ledger.admit([h, d]) == {h: "gone", d: "go"}
+    assert "stopped the lab" in ledger.jobs()[-1]["end"]["error"] and ledger.jobs()[-1]["charged"] == 0
+
+
+class SlowJob:
+    """Stands in for a Modal function whose calls take a few looks to finish, as a GPU job takes a while."""
+
+    def __init__(self, looks: int = 3) -> None:
+        self.looks, self.live, self.most, self.order = looks, set(), 0, []
+
+    def spawn(self, name: str):
+        self.live.add(name)
+        self.most, self.order = max(self.most, len(self.live)), [*self.order, name]
+        return SlowCall(self, name)
+
+
+class SlowCall:
+    def __init__(self, job: SlowJob, name: str) -> None:
+        self.job, self.name, self.left = job, name, job.looks
+
+    def get(self, timeout=None):
+        self.left -= 1
+        if self.left > 0:  # Modal waits out the timeout, then says "not finished yet" with a bare TimeoutError
+            time.sleep(timeout)
+            raise TimeoutError()
+        self.job.live.discard(self.name)
+        if self.name.endswith("bad"):
+            raise TimeoutError("the job itself timed out")  # not to be mistaken for "not finished yet"
+        return {"gpu min": 1.0, "gpu": "L4"}
+
+
+def test_a_launch_of_more_jobs_than_slots_runs_them_all_a_few_at_a_time(repo, monkeypatch, capsys):
+    import cloud
+
+    train = repo.worktree("train")  # the template's limits: two at once
+    monkeypatch.chdir(train)
+    monkeypatch.setenv("LAB_ROLE", "train")
+    names = ["r0001", "r0002", "r0003", "r0004-bad", "r0005"]
+    booking = jobs.book([{"run": name} for name in names], "train", 5, cwd=train)
+    assert booking.line == names[2:] and "waiting in line for a GPU: r0003, r0004-bad, r0005. The lab runs at most 2" in booking.waits()
+    assert sessions.busy(repo.board, "train") == names, "waiting jobs too would die with the conversation"
+    assert cli.main(["status"]) == 0 and "running: r0001 (train, just now), r0002 (train, just now); waiting for a GPU: r0003, r0004-bad, r0005" in capsys.readouterr().out
+    assert cli.main(["budget"]) == 0 and "waiting for a GPU, next first: r0003 by train" in capsys.readouterr().out
+    job = SlowJob()
+    results = cloud.fly(job, names, [(name,) for name in names], booking, every=0.01)
+    booking.close()
+    assert job.most == 2 and job.order == names, "never more than the lab's two at once, and in the order they were booked"
+    assert [r for r in results if isinstance(r, dict)] == [{"gpu min": 1.0, "gpu": "L4"}] * 4 and isinstance(results[3], TimeoutError)
+    assert "r0003: a GPU slot is free; starting" in capsys.readouterr().out
+    ledger = Ledger(repo.board)
+    assert ledger.running() == [] and ledger.waiting() == [] and ledger.spent() == pytest.approx(4.0, abs=0.5)
+    assert [bool(j.get("queued")) for j in ledger.jobs()] == [False, False, True, True, True]
+    assert [j["end"]["status"] for j in ledger.jobs()] == ["ok", "ok", "ok", "failed", "ok"]
+    assert git("status", "--porcelain", cwd=repo.board) == "", "the ledger is recorded in the board's history"
+
+    again = jobs.book([{"run": name} for name in ("r0006", "r0007", "r0008")], "train", 5, cwd=train)
+    again.close()  # the launcher is interrupted: what ran is charged for its time, what waited costs nothing
+    r6, r7, r8 = ledger.jobs()[-3:]
+    assert [j["end"]["status"] for j in (r6, r7, r8)] == ["failed", "failed", "dropped"] and r8["charged"] == 0
 
 
 def test_run_names_are_used_once_but_a_run_can_be_evaluated_again(board):
@@ -724,7 +821,7 @@ def test_an_agent_asks_for_its_fresh_start_and_leaves_a_handover(repo, monkeypat
     assert cli.main(["fresh", "too", "early"]) == 1 and "only 12 minutes old" in capsys.readouterr().err
     seen_since(repo.board, "train", hours=8)
     (job,) = Ledger(repo.board).reserve([{"run": "r0002", "by": "train"}], minutes=5)
-    assert cli.main(["fresh", "a job is running"]) == 1 and "still running: r0002" in capsys.readouterr().err
+    assert cli.main(["fresh", "a job is running"]) == 1 and "still running or waiting for a GPU: r0002" in capsys.readouterr().err
     Ledger(repo.board).settle(job, 1, "ok")
     (train / "sandwm" / "models.py").write_text("WIDTH = 256\n")
     assert cli.main(["fresh", "work is uncommitted"]) == 1 and "commit what is in your worktree" in capsys.readouterr().err

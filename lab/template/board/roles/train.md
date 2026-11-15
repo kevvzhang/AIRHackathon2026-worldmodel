@@ -46,8 +46,13 @@ actions), tell eval: it keeps the list of what is not tested in `coverage.md`.
    It books the GPU minutes, trains, evaluates, scores the run on the benchmark, fetches the
    results to `{{RUNS}}\<name>` and prints the scorecard next to the champion's. Name runs
    `r<4 digits>-<what>`, counting up.
-6. Start as many runs as may run at once, each as its own background command, and have the
-   next ones ready to start as soon as a slot frees up. Runs in one batch must not depend on
+6. Start the whole batch, each run as its own background command, the one you want first,
+   first. The lab runs a limited number of GPU jobs at once, all agents together
+   (`uv run python -m lab budget` shows the number, what runs and what waits). A run started
+   beyond that is not refused: its command says that it waits in line, and it starts by itself
+   when a slot is free, first come, first served. Leave that command running and do not start
+   the run again: its GPU minutes are booked, and ending the command takes it out of the line.
+   So do not hold runs back to watch for a free slot. Runs in one batch must not depend on
    each other's answers; what depends on an answer goes into the next batch. While they run,
    prepare that batch.
 7. Read the result: the scorecard against the champion, the training curves (`curves.png`), and
