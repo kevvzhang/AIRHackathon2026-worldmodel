@@ -23,7 +23,6 @@ and SANDWM_MAX_GPUS (default 4), the most GPUs a sweep may hold at once.
 
 from __future__ import annotations
 
-import json
 import os
 import shlex
 from importlib.metadata import version
@@ -65,6 +64,7 @@ def train(name: str, data: str = "basic64", args: str = "", horizon: int = 16) -
     """Train runs/<name> on data/<data>, evaluate it, and return a summary of the results."""
     from sandwm import evaluate
     from sandwm import train as trainer
+    from sandwm.compare import summarise
 
     run = VOL / "runs" / name
     trainer.main(["--data", str(VOL / "data" / data), "--out", str(run), *shlex.split(args)])
@@ -72,31 +72,6 @@ def train(name: str, data: str = "basic64", args: str = "", horizon: int = 16) -
     evaluate.main(["--run", str(run), "--horizon", str(horizon)])
     volume.commit()
     return summarise(run)
-
-
-def summarise(run: Path, frames_ahead: int = 16) -> dict:
-    """The handful of numbers worth comparing across runs.
-
-    Imagination is compared `frames_ahead` raw frames into the future, so that runs with different
-    frame skips are judged over the same stretch of simulated time.
-    """
-    rows = [json.loads(line) for line in (run / "metrics.jsonl").read_text().splitlines()]
-    val = [r for r in rows if "val_pred" in r][-1]
-    timing = [r for r in rows if "sec_per_step" in r][-1]
-    ev = json.loads((run / "eval" / "metrics.json").read_text())
-    roll = ev["rollout"]
-    i = min(frames_ahead // ev["frame_skip"], len(roll["horizon"])) - 1
-    lm, mi, ch = roll["latent_mse"], roll["miou"], roll["changed_cell_accuracy"]
-    return {
-        "steps": val["step"],
-        "train minutes": round(timing["step"] * timing["sec_per_step"] / 60, 1),
-        "1-step latent MSE model/frozen": round(val["val_pred"] / val["val_copy"], 3),
-        "rank": round(val["emb_rank"]),
-        f"+{frames_ahead} frames latent MSE model/frozen": round(lm["model"][i] / lm["copy"][i], 3),
-        "mIoU model/frozen/ceiling": "/".join(f"{mi[k][i]:.3f}" for k in ("model", "frozen", "ceiling")),
-        "changed-cell acc model/frozen/ceiling": "/".join(f"{ch[k][i]:.3f}" for k in ("model", "frozen", "ceiling")),
-        "probe R2 mean": round(sum(ev["probes"].values()) / len(ev["probes"]), 3),
-    }
 
 
 @app.local_entrypoint()
@@ -107,10 +82,14 @@ def sweep(spec: str, data: str = "basic64", horizon: int = 16) -> None:
     print(f"launching {len(jobs)} runs on {'/'.join(GPU)} (at most {MAX_GPUS} at a time): {', '.join(j[0] for j in jobs)}",
           flush=True)
     results = list(train.starmap(jobs, return_exceptions=True))
-    print("\n=== sweep results ===")
-    for (name, _, args, _), result in zip(jobs, results):
-        print(f"\n{name}:  {args}")
+
+    from sandwm.compare import format_table
+
+    done = {job[0]: result for job, result in zip(jobs, results) if not isinstance(result, Exception)}
+    print("
+=== sweep results ===")
+    if done:
+        print(format_table(done))
+    for job, result in zip(jobs, results):
         if isinstance(result, Exception):
-            print(f"  FAILED: {result!r}")
-        else:
-            print("  " + " | ".join(f"{k} {v}" for k, v in result.items()))
+            print(f"{job[0]} FAILED: {result!r}")

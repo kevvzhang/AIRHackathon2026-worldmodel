@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from sandwm import evaluate, generate, train
+from sandwm import compare, evaluate, generate, train
 from sandwm.data import EpisodeDataset, encode_actions
 from sandwm.materials import BASIC, WALL
 from sandwm.sim import SandSim
@@ -77,7 +77,7 @@ def test_observations_and_action_encoding(dataset_dir):
 
 
 @pytest.mark.parametrize("frame_skip", [1, 2])
-def test_train_then_evaluate(dataset_dir, tmp_path, frame_skip):
+def test_train_then_evaluate(dataset_dir, tmp_path, frame_skip, capsys):
     run = tmp_path / "run"
     train.main(["--data", str(dataset_dir), "--out", str(run), "--steps", "4", "--batch", "8", "--eval-every", "2",
                 "--log-every", "1", "--num-proj", "32", "--frame-skip", str(frame_skip), "--threads", "2",
@@ -92,3 +92,12 @@ def test_train_then_evaluate(dataset_dir, tmp_path, frame_skip):
     assert set(result["probes"]) >= {"sand: amount", "water: centre y", "wall: centre x"}
     for name in ("rollout_curves.png", "rollout_sheet.png", "rollout.gif"):
         assert (run / "eval" / name).stat().st_size > 0
+    for series in ("model", "frozen", "ceiling", "pixel_copy"):
+        assert len(result["rollout"]["miou"][series]) == 6
+
+    summary = compare.summarise(run, frames_ahead=4)
+    assert summary["skip"] == frame_skip and summary["steps"] == 4
+    capsys.readouterr()
+    compare.main([str(run), "--frames-ahead", "4"])
+    table = capsys.readouterr().out.splitlines()
+    assert len(table) == 3 and table[0].startswith("run") and table[2].startswith("run ")
