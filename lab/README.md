@@ -51,10 +51,11 @@ Everything the agents are told lives on the board, `.lab\board`, and they reread
       runs\              runs fetched from the cloud volume (scorecards, pictures, checkpoints)
       datasets\          local copies of datasets and the benchmark
 
-Agents never touch `main` or this checkout. They publish to the branch `lab` (the trunk) with
+Agents never touch `main` or this checkout. They publish to the branch `lab-trunk` with
 `python -m lab publish`, which merges the trunk, runs the tests and only then moves it. To take
-their work: `git merge lab` here. To give them a change you made on `main`: `git merge lab`, then
-`git branch -f lab main` (never check `lab` out directly; nothing should hold it).
+their work: `git merge lab-trunk` here. To give them a change you made on `main`:
+`git merge lab-trunk`, then `git branch -f lab-trunk main` (never check `lab-trunk` out; nothing
+should hold it).
 
 ## What a run goes through
 

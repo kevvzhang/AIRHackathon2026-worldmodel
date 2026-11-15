@@ -174,7 +174,7 @@ def test_guard_trips_on_commands_that_leave_the_lab(tmp_path):
     for fine in ("uv run python -m lab train r0001 --data basic64-10k -- --steps 100", "uv run pytest -q", "git status",
                  "git add sandwm/models.py && git commit -m 'spatial latent'", "git branch --show-current", "git branch -a",
                  "uv run modal app list", "uv run modal volume ls sandwm runs", "uv run python -m lab budget",
-                 "git checkout lab -- sandwm/train.py", "git log main..lab --oneline"):
+                 "git checkout lab-trunk -- sandwm/train.py", "git log main..lab-trunk --oneline"):
         assert blocked(fine) is None, fine
     assert "lab train" in blocked("uv run modal run cloud.py::train --name x")
     assert "lab train" in blocked("uv run modal run --detach cloud.py::sweep --spec 'a: '", "PowerShell")
@@ -184,11 +184,11 @@ def test_guard_trips_on_commands_that_leave_the_lab(tmp_path):
     assert "off limits" in blocked("uv run modal token new")
     assert "other Modal projects" in blocked("uv run modal app logs pwa-wsp-probe")
     assert "never deleted" in blocked("uv run modal volume rm -r sandwm runs/r0001")
-    assert "pushes nowhere" in blocked("git push origin lab")
+    assert "pushes nowhere" in blocked("git push origin lab-trunk")
     assert "managed by" in blocked("git branch -D lab-eval")
-    assert "managed by" in blocked("git update-ref refs/heads/lab HEAD")
+    assert "managed by" in blocked("git update-ref refs/heads/lab-trunk HEAD")
     assert "own branch" in blocked("git checkout main")
-    assert "own branch" in blocked("git switch lab && git merge lab-train")
+    assert "own branch" in blocked("git switch lab-trunk && git merge lab-train")
 
 
 def test_guard_stop_switch_blocks_everything_but_reading(tmp_path):
@@ -384,6 +384,7 @@ def test_command_line_end_to_end(repo, monkeypatch, capsys):
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "you are: train" in out and "0.0 of 300 GPU min" in out and "champion  recon-k4" in out
+    assert f"trunk     {TRUNK} @ {git('rev-parse', '--short', TRUNK, cwd=train)} start" in out
     assert "last note:" in out and "launched r0001" in out and "blockers: G-001" in out
     monkeypatch.setenv("LAB_ROLE", "eval")
     assert cli.main(["inbox"]) == 0 and "r0001 is ready" in capsys.readouterr().out

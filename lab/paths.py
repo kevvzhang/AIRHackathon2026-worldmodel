@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROLES = ("eval", "data", "train")
-TRUNK = "lab"  # the branch the agents publish to; `main` stays the human's
+TRUNK = "lab-trunk"  # the branch the agents publish to; `main` stays the human's
 BOARD_BRANCH = "lab-board"
 DEFAULT_BENCH = "bench-basic-v1"
 BENCH_SEEDS = 9000  # dataset seeds from here up are reserved for benchmarks, which are never trained on

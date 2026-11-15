@@ -40,7 +40,7 @@ $identity = "You are the $Role agent of the sandwm lab: one of three autonomous 
     "The rest of this machine, including the main checkout $repo, is not yours to change. " +
     "Nobody is watching this terminal: do not ask questions here and do not wait for answers. " +
     "Whatever the human should know or decide goes to their inbox with: uv run python -m lab msg human. " +
-    "Your session is named lab-$Role; the other agents are the sessions lab-eval, lab-data and lab-train."
+    "The three agents run as the sessions lab-eval, lab-data and lab-train; yours is lab-$Role."
 
 $tick = "/loop Lab tick ($Role agent). " +
     "First read $board\PROGRAM.md and $board\roles\$Role.md. " +

@@ -46,7 +46,7 @@ TRIPWIRES = [
     (r"\bgit\s+push\b", "The lab pushes nowhere. Share work with `uv run python -m lab publish`."),
     (r"\bgit\s+(worktree\s+(remove|prune|move)|update-ref|branch\s+(-[a-zA-Z]*[dDfMm]\b|--delete|--force|--move)|tag\s+(-d\b|--delete))",
      "Branches, tags and worktrees of the lab are managed by `python -m lab`; leave them as they are."),
-    (r"\bgit\s+(checkout|switch)\s+(-\S+\s+)*(main|lab|lab-board)\s*($|[;&|])",
+    (r"\bgit\s+(checkout|switch)\s+(-\S+\s+)*(main|lab-trunk|lab-board)\s*($|[;&|])",
      "Stay on your own branch. To take in the others' work: `uv run python -m lab sync`."),
 ]
 
