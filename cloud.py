@@ -17,8 +17,8 @@ Datasets and runs live on a Modal volume named `sandwm`, as  data/<dataset>/  an
     uv run modal volume get sandwm runs/vit-k2 runs/
 
 `--detach` keeps the job alive if this terminal closes.  Environment variables read at launch:
-SANDWM_GPU (default L4; e.g. T4, A10G, L40S, A100, H100) and SANDWM_MAX_GPUS (default 4), the
-most GPUs a sweep may hold at once.
+SANDWM_GPU, a comma-separated order of preference (default "L4,A10G,T4"; also L40S, A100, H100),
+and SANDWM_MAX_GPUS (default 4), the most GPUs a sweep may hold at once.
 """
 
 from __future__ import annotations
@@ -34,7 +34,8 @@ import modal
 app = modal.App("sandwm")
 volume = modal.Volume.from_name("sandwm", create_if_missing=True)
 VOL = Path("/vol")
-GPU = os.environ.get("SANDWM_GPU", "L4")
+# A comma-separated list is an order of preference: Modal takes the first type it can schedule.
+GPU = os.environ.get("SANDWM_GPU", "L4,A10G,T4").split(",")
 MAX_GPUS = int(os.environ.get("SANDWM_MAX_GPUS", "4"))
 
 # Same package versions as the local environment; on Linux the default torch wheel includes CUDA.
@@ -103,7 +104,8 @@ def sweep(spec: str, data: str = "basic64", horizon: int = 16) -> None:
     """Train several runs in parallel.  spec is  "name: train args; other-name: train args"."""
     jobs = [(name.strip(), data, args.strip(), horizon)
             for name, _, args in (item.partition(":") for item in spec.split(";") if item.strip())]
-    print(f"launching {len(jobs)} runs on {GPU} (at most {MAX_GPUS} at a time): {', '.join(j[0] for j in jobs)}")
+    print(f"launching {len(jobs)} runs on {'/'.join(GPU)} (at most {MAX_GPUS} at a time): {', '.join(j[0] for j in jobs)}",
+          flush=True)
     results = list(train.starmap(jobs, return_exceptions=True))
     print("\n=== sweep results ===")
     for (name, _, args, _), result in zip(jobs, results):

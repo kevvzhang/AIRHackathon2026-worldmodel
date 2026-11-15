@@ -141,7 +141,7 @@ def main(argv=None) -> None:
     model, decoder = JEPA(cfg).to(device), Decoder(cfg).to(device)
     if device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = True
-        model.amp = not args.no_amp and torch.cuda.is_bf16_supported()
+        model.amp = not args.no_amp and torch.cuda.is_bf16_supported(including_emulation=False)
     sigreg = SIGReg(args.num_proj).to(device)
     opt = torch.optim.AdamW([
         {"params": model.parameters(), "lr": args.lr, "weight_decay": args.weight_decay},
