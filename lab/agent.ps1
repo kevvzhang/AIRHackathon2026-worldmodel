@@ -176,6 +176,10 @@ function Reset-Terminal {
 }
 
 $env:LAB_ROLE = $Role
+# Claude Code stops an idle session's background commands when the laptop runs low on memory. An agent's
+# background commands include the launchers of its cloud jobs, and a cloud job ends with its launcher
+# (r0061-r0064 were cut that way on 2026-11-15), so the agents' sessions keep theirs.
+$env:CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP = '1'
 $env:PYTHONUNBUFFERED = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 Set-Location $tree

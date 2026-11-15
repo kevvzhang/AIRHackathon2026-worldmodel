@@ -160,7 +160,7 @@ fails there becomes an ordinary gap. `lab status` shows how many entries are sti
 
 | rule | enforced by |
 |------|-------------|
-| total GPU minutes, minutes per job, jobs at once | `lab/budget.py`, called by every entry point of `cloud.py` before anything starts; a job that never reports back is charged its full booking |
+| total GPU minutes, minutes per job, jobs at once | `lab/budget.py`, called by every entry point of `cloud.py` before anything starts; a job that never reports back is charged its full booking, unless its launcher's heartbeat stopped: then it is "cut" and charged up to the last heartbeat plus 5 minutes |
 | one job cannot run longer than the per-job limit | Modal's function timeout, set from `limits.toml` |
 | stop | the guard hook refuses every tool call but reads while `STOP` is on the board; `lab stop` also stops the `sandwm` app on Modal |
 | agents write only in their worktree, their own board files and the shared folders | the guard hook (`lab/guard.py`, a PreToolUse hook in each worktree's `.claude\settings.local.json`), for the file-editing tools |

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from lab import board as boards
-from lab import cli, guard, jobs, scores, sessions, snapshots
+from lab import budget, cli, guard, jobs, scores, sessions, snapshots
 from lab.budget import Ledger, Limits, Refused
 from lab.paths import ROLES, TRUNK, Lab, LabError, git, locked, now, parse_time, stamp
 from lab.setup import agent_settings, setup
@@ -45,6 +45,29 @@ def test_a_job_is_charged_its_allowance_until_it_reports_back(board):
     record = ledger.jobs()[0]
     assert record["note"] == "baseline" and record["end"]["gpu"] == "A10G" and record["kind"] == "train"
     assert ledger.summary()["by"] == {"train": 6.25}
+
+
+def test_a_job_whose_launcher_died_is_cut_and_charged_until_its_last_heartbeat(board, monkeypatch):
+    ledger = Ledger(board)
+    cut, alive = ledger.reserve([{"run": "r0001"}, {"run": "r0002"}])
+    ledger.beat(cut)  # the launcher of r0001 beats once at the start, then is killed
+    later = now() + timedelta(minutes=12)
+    monkeypatch.setattr(budget, "now", lambda: later)
+    (alive_beat := ledger._beat_file(alive)).parent.mkdir(exist_ok=True)
+    alive_beat.write_text(stamp(later - timedelta(minutes=1)))  # r0002's launcher is still beating
+    r1, r2 = ledger.jobs()
+    assert r1["end"]["status"] == "cut" and r1["charged"] == pytest.approx(budget.STOP_MIN, abs=0.05)
+    assert r2["end"] is None and r2["charged"] == 20 and [j["run"] for j in ledger.running()] == ["r0002"]
+    assert cli.job_state(r1) == "cut"
+    ledger.reserve([{"run": "r0003"}])  # the next booking writes the end line for good, and drops the heartbeat
+    ends = [e for e in ledger.events() if e.get("event") == "end"]
+    assert [(e["job"], e["status"]) for e in ends] == [(cut, "cut")] and "unsettled" not in ends[0]
+    assert ledger.last_beat(cut) is None and ledger.last_beat(alive) is not None
+    ledger.settle(cut, 7.5, "ok")  # had it reported back after all, its own end line wins
+    assert ledger.jobs()[0]["charged"] == 7.5 and ledger.jobs()[0]["end"]["status"] == "ok"
+    ledger.settle(alive, 1.0, "ok")
+    (never,) = ledger.reserve([{"run": "r0004"}], minutes=5)  # no heartbeat at all (an older launcher): charged in full
+    assert next(j for j in ledger.jobs() if j["job"] == never)["charged"] == 5
 
 
 def test_the_budget_refuses_what_does_not_fit(board):
@@ -386,9 +409,12 @@ def test_booking_through_the_lab_keeps_the_ledger_and_tags_the_code(repo):
     assert booking.minutes == 5 and git("rev-parse", "run/r0001", cwd=repo.home) == git("rev-parse", "HEAD", cwd=train)
     ledger = Ledger(repo.board)
     assert ledger.spent() == 10 and ledger.jobs()[0]["by"] == "train" and ledger.jobs()[0]["note"] == "baseline"
+    ids = list(booking.jobs.values())
+    assert all(ledger.last_beat(job) for job in ids), "the launcher's heartbeat says it is alive"
     booking.done("r0001", {"gpu min": 1.5, "gpu": "A10G", "steps": 100})
     booking.done("r0002", RuntimeError("out of memory"))
     booking.close()
+    assert not any(ledger.last_beat(job) for job in ids)
     r1, r2 = ledger.jobs()
     assert r1["end"]["status"] == "ok" and r1["charged"] == 1.5
     assert r2["end"]["status"] == "failed" and r2["charged"] < 1 and "out of memory" in r2["end"]["error"]

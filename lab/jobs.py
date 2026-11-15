@@ -7,11 +7,12 @@ enforced.
 
 from __future__ import annotations
 
+import threading
 import time
 
 from . import board as boards
 from . import sessions
-from .budget import Ledger, Limits, Refused  # noqa: F401  (Refused is part of this module's interface)
+from .budget import BEAT_MIN, Ledger, Limits, Refused  # noqa: F401  (Refused is part of this module's interface)
 from .paths import Lab, LabError, current_role, git
 
 
@@ -41,12 +42,31 @@ def _save(lab: Lab, message: str) -> None:
 
 
 class Booking:
-    """GPU minutes booked for a set of runs.  Call `done` as each reports back and `close` when all are in."""
+    """GPU minutes booked for a set of runs.  Call `done` as each reports back and `close` when all are in.
+
+    While it is open it writes a heartbeat for each job that has not reported back, so that the ledger can tell a
+    job whose launcher was killed from one that is still running (lab/budget.py).
+    """
 
     def __init__(self, lab: Lab, ledger: Ledger, jobs: dict[str, str], minutes: float, limit: float) -> None:
         self.lab, self.ledger, self.jobs = lab, ledger, dict(jobs)
         self.minutes, self.limit = minutes, limit  # booked per run; the most the cloud lets one job run
         self.started = time.time()
+        self.stopped, self.ids = threading.Event(), list(self.jobs.values())
+        self._beat()
+        self.beating = threading.Thread(target=self._beating, name="lab-heartbeat", daemon=True)
+        self.beating.start()
+
+    def _beat(self) -> None:
+        for job in list(self.jobs.values()):
+            try:
+                self.ledger.beat(job)
+            except OSError:  # a missed beat is harmless; five in a row would mark the job as cut
+                pass
+
+    def _beating(self) -> None:
+        while not self.stopped.wait(BEAT_MIN * 60):
+            self._beat()
 
     def done(self, run: str, result) -> None:
         """`result` is the dict the cloud job returned, or whatever went wrong instead."""
@@ -60,8 +80,12 @@ class Booking:
             self.ledger.settle(job, min(elapsed, self.limit), "failed", error=repr(result)[:300])
 
     def close(self) -> None:
+        self.stopped.set()
+        self.beating.join(timeout=10)
         for run in list(self.jobs):
             self.done(run, "no result: interrupted")
+        for job in self.ids:  # a beat written just as its job reported back
+            self.ledger.unbeat(job)
         _save(self.lab, "ledger: jobs ended")
 
 

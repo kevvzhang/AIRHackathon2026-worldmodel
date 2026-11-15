@@ -5,6 +5,11 @@ long one job may run, and how many may run at once.  `ledger.jsonl` beside it ge
 before every cloud GPU job and an "end" line after it.  A job that started and never reported an
 end is charged its full allowance, so the ledger can over-count but never under-count.
 
+The process that launched a job (cloud.py, through lab/jobs.py) writes a heartbeat for it every
+minute.  A cloud job ends with its launcher, so when the heartbeat stops for good (the launcher was
+killed, its tab closed) the job is "cut": charged up to its last heartbeat plus a few minutes, and
+no longer counted as running.  The next booking writes its end line.
+
 The total is counted per budget period.  A period ends when the human starts the lab again from a
 standstill (lab/launch.ps1, or `python -m lab budget --new`): a "period" line goes into the ledger
 and the count begins at zero, while the jobs of earlier periods stay on record.
@@ -16,10 +21,14 @@ import json
 import re
 import tomllib
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .paths import LabError, locked, now, parse_time, stamp
+
+BEAT_MIN = 1.0  # a launcher writes the heartbeat of its jobs this often (lab/jobs.py)
+GONE_MIN = 5.0  # a heartbeat this old means the launcher is gone, and the cloud has stopped its jobs
+STOP_MIN = 5.0  # charged after the last heartbeat: Modal stopped r0061-r0064 about 2 minutes after their launchers died
 
 NO_WAY_AROUND = ("Do not look for another way to start it. Carry on with work that needs no GPU; if more budget would "
                  "change what the lab can achieve, say so once to the human:  uv run python -m lab msg human ...")
@@ -65,6 +74,7 @@ class Ledger:
         self.board = Path(board)
         self.path = self.board / "ledger.jsonl"
         self.lock = self.board.parent / "ledger.lock"
+        self.alive = self.board.parent / "alive"  # one heartbeat file per job whose launcher is running; not on the board
 
     @property
     def limits(self) -> Limits:
@@ -75,9 +85,38 @@ class Ledger:
             return []
         return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
+    # --- heartbeats: is the launcher of a job still there? ---
+    def _beat_file(self, job: str) -> Path:
+        return self.alive / (re.sub(r"[^A-Za-z0-9._-]", "_", job) + ".txt")
+
+    def beat(self, job: str) -> None:
+        """The launcher of `job` is alive (lab/jobs.py calls this every BEAT_MIN minutes)."""
+        self.alive.mkdir(parents=True, exist_ok=True)
+        self._beat_file(job).write_text(stamp(), encoding="utf-8")
+
+    def unbeat(self, job: str) -> None:
+        self._beat_file(job).unlink(missing_ok=True)
+
+    def last_beat(self, job: str) -> datetime | None:
+        try:
+            return parse_time(self._beat_file(job).read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return None
+
+    def _cut(self, start: dict) -> dict | None:
+        """The end line of a job whose launcher has stopped beating; None if it still beats or never did."""
+        last = self.last_beat(start["job"])
+        if last is None or now() - last < timedelta(minutes=GONE_MIN):
+            return None
+        began, cap = parse_time(start["t"]), float(start["cap_min"])
+        ended = min(last + timedelta(minutes=STOP_MIN), began + timedelta(minutes=cap))
+        return {"event": "end", "job": start["job"], "t": stamp(ended), "gpu_min": round(max((ended - began).total_seconds() / 60, 0.0), 2),
+                "status": "cut", "error": f"its launcher stopped at {stamp(last)} (killed, or its tab closed); the cloud ends a job with its launcher"}
+
     def jobs(self) -> list[dict]:
         """Every GPU job in the order it started: its start line, plus `end` (its end line or None), `charged` minutes
-        and `period`, the budget period it was booked in (0 until the first `new_period`, then 1, ...)."""
+        and `period`, the budget period it was booked in (0 until the first `new_period`, then 1, ...).  A job whose
+        launcher has died gets the end line `settle_cut` would write, marked "unsettled" until it is written."""
         events = self.events()
         ends = {e["job"]: e for e in events if e.get("event") == "end"}
         period, found = 0, []
@@ -85,9 +124,27 @@ class Ledger:
             if e.get("event") == "period":
                 period += 1
             elif e.get("event") == "start":
-                found.append({**e, "end": ends.get(e["job"]), "period": period,
-                              "charged": float(ends[e["job"]]["gpu_min"] if e["job"] in ends else e["cap_min"])})
+                end = ends.get(e["job"])
+                if end is None and (cut := self._cut(e)):
+                    end = {**cut, "unsettled": True}
+                found.append({**e, "end": end, "period": period, "charged": float(end["gpu_min"] if end else e["cap_min"])})
         return found
+
+    def _write_cut(self, jobs: list[dict]) -> list[str]:
+        """Write the end lines of the jobs that were cut; the caller holds the lock."""
+        cut = [j for j in jobs if j["end"] and j["end"].get("unsettled")]
+        if cut:
+            with self.path.open("a", encoding="utf-8", newline="\n") as f:
+                for j in cut:
+                    f.write(json.dumps({k: v for k, v in j["end"].items() if k != "unsettled"}) + "\n")
+            for j in cut:
+                self.unbeat(j["job"])
+        return [j["job"] for j in cut]
+
+    def settle_cut(self) -> list[str]:
+        """Record the end of every job whose launcher has died.  Returns their job ids."""
+        with locked(self.lock):
+            return self._write_cut(self.jobs())
 
     def period(self) -> tuple[int, str | None]:
         """The number of the current budget period and when it began (None for the first: it began with the lab)."""
@@ -138,6 +195,7 @@ class Ledger:
             if cap > limits.gpu_minutes_per_run:
                 raise Refused(f"{cap:g} minutes is more than the {limits.gpu_minutes_per_run:g} one job may take. {NO_WAY_AROUND}")
             jobs = self.jobs()
+            self._write_cut(jobs)  # jobs whose launcher died give back their minutes and their place for good
             if len(set(names)) != len(names):
                 raise Refused(f"run names must differ: {', '.join(names)}")
             if kind == "train":
@@ -168,12 +226,13 @@ class Ledger:
                     f.write(json.dumps({"event": "start", "job": job, "kind": kind, "t": t, "cap_min": cap, **run}) + "\n")
             return ids
 
-    def settle(self, job: str, gpu_min: float, status: str, **extra) -> None:
-        """Record that a job has ended and how many GPU minutes it really used."""
+    def settle(self, job: str, gpu_min: float, status: str, at: str | None = None, **extra) -> None:
+        """Record that a job has ended (at `at`, else now) and how many GPU minutes it really used."""
         with locked(self.lock):
             with self.path.open("a", encoding="utf-8", newline="\n") as f:
-                f.write(json.dumps({"event": "end", "job": job, "t": stamp(), "gpu_min": round(float(gpu_min), 2),
+                f.write(json.dumps({"event": "end", "job": job, "t": at or stamp(), "gpu_min": round(float(gpu_min), 2),
                                     "status": status, **extra}) + "\n")
+        self.unbeat(job)
 
     def record(self, **event) -> None:
         """A line for the record that costs no GPU time, e.g. a dataset being generated."""

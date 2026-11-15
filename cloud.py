@@ -181,6 +181,8 @@ def launch(job, names: list[str], calls: list[tuple], kind: str, minutes: float,
     jobs = lab_jobs()
     booking = None
     if jobs:
+        if app.app_id:  # the Modal app this launch runs as: `modal app list` shows when it stopped
+            record = [{**r, "app": app.app_id} for r in record]
         try:
             booking = jobs.book(record, kind, minutes)
         except jobs.Refused as refusal:
