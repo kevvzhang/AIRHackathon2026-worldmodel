@@ -1,0 +1,24 @@
+[project]
+name = "sandwm"
+version = "0.1.0"
+description = "Tiny LeWM-style JEPA world model for a falling-sand pixel world (CPU-trainable)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "torch>=2.2",
+    "pillow>=10",
+    "matplotlib>=3.8",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+# Use a uv-managed interpreter rather than the system/conda one, so the venv
+# does not inherit conda's OpenMP/MKL DLLs (which clash with torch's on Windows).
+python-preference = "only-managed"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

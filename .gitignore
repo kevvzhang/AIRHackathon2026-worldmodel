@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# generated artefacts (re-creatable from the commands in README.md)
+data/
+runs/
