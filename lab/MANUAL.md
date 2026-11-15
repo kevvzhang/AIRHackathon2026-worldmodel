@@ -16,7 +16,8 @@ ideas that are too different to fit in that loop.
 Each agent is an ordinary interactive Claude Code session (Opus 5.5, effort xhigh by default)
 in its own terminal tab, working in its own git worktree. It is woken by its own finished jobs
 and by messages from the other agents, with a fallback check every 2 hours. The research agent
-has no fallback: it sleeps until someone writes to it.
+has no fallback: it sleeps until someone writes to it. About every 6 hours an agent's
+conversation is replaced by an empty one (see "Fresh starts").
 
 ## Start, watch, stop
 
@@ -89,6 +90,35 @@ turn out to damage everything, and is often too big for one step. So such an ide
 
 `uv run python -m lab status` lists the tracks and what they have spent.
 
+## Fresh starts: clearing an agent's context
+
+An agent that works in one conversation for many hours narrows: each step builds on the one
+before, and it ends up polishing the idea it already has. So each agent's conversation is
+replaced by an empty one about every `session_hours` hours (`limits.toml`, 6 by default, 0 =
+never; data's limit is 10% longer and train's 20%, so that the three do not start afresh at
+the same moment). Claude Code has no way to clear a running conversation without someone
+typing `/clear`, so the launcher ends the session's process and starts a new one in the same
+tab:
+
+- The guard hook keeps a clock for each conversation in `.lab\board\status\<role>.json`: when it
+  began, how many tool calls it has made, when the last one was. `lab status` shows the age.
+- A conversation is due once it is older than the limit and has made at least 50 tool calls
+  (one that has hardly worked is left alone, which keeps the sleeping research agent asleep).
+- `lab status` then tells the agent. It starts no new cloud job (the ledger refuses), lets its
+  running jobs finish, commits its work and runs `python -m lab fresh "<handover>"`. The
+  handover goes into its journal.
+- `lab\agent.ps1`, which stays in the tab for as long as the agent runs, sees the request,
+  ends the session and starts a new one. It also asks on the agent's behalf when a due
+  conversation has made no tool call for 20 minutes and has nothing running.
+- The new conversation reads the evidence before the old plans, writes down what it would do
+  if it started today ("FRESH LOOK" in its journal), and only then decides whether to carry on
+  as before (`PROGRAM.md`, "Fresh starts").
+
+What it costs: the first tick of a new conversation is longer, and an agent that is due stops
+launching until its last job is in, so a few GPU slots can stand empty for a while. A
+conversation started by an older version of the launcher cannot be replaced: `lab status` says
+so, and restarting that agent once (close its tab, `.\lab\launch.ps1 -Roles <role>`) fixes it.
+
 ## Going back
 
 A snapshot is two git tags, `snapshot/<name>/code` on the trunk and `snapshot/<name>/board` on
@@ -137,6 +167,8 @@ fails there becomes an ordinary gap. `lab status` shows how many entries are sti
 | no direct `modal run`, no touching the limits, the ledger, credentials, other Modal projects, `git push`, branch surgery | the guard hook, by matching shell commands |
 | tests pass before code reaches the trunk; `lab/` and `cloud.py` are not changed by agents | `python -m lab publish` |
 | research tracks use at most `gpu_minutes_tracks` in total | `lab/budget.py`, by the run name (`t001-...`) |
+| a conversation is replaced by an empty one after `session_hours` | `lab/agent.ps1` ends the session and starts a new one, when the agent asks (`lab fresh`) or when it is due and idle; `lab/jobs.py` refuses new cloud jobs from a conversation that is due |
+| the handover, and the fresh look a new conversation begins with | the instructions only |
 | the share of work tracks get, when a track is adopted or dropped | the instructions only |
 | everything else | the session's permission mode (`auto` by default: Claude Code's safety classifier) and the instructions |
 
@@ -171,6 +203,11 @@ Usage and billing in the Modal dashboard.
   can now be up to 2 hours away.
 - All three agents share this laptop's CPU and one Modal GPU quota (also used by your other
   projects), so jobs can queue.
-- The agents themselves have not been run yet. The tooling is tested (`uv run pytest`), but the
-  first launch is the first test of the prompts and of the `/loop` and wake-up behaviour: watch
-  the first hour.
+- Fresh starts end the session's process abruptly; there is no gentler way from outside. They
+  have been tested with a stand-in program in place of Claude Code, not yet with a real
+  session: watch the first one. A background command the agent forgot about dies with the
+  conversation (cloud GPU jobs are checked for, other commands are not).
+- `-Continue` resumes the agent's last conversation by the id the guard recorded
+  (`claude --continue` skips conversations that began with `/loop`); this has not been tried on
+  a real session yet. Its scheduled fallback job comes back if it has not expired; its
+  background commands do not.

@@ -11,6 +11,8 @@
       .\lab\launch.ps1 -Roles train             start (or restart) one agent
       .\lab\launch.ps1 -Roles eval -Continue    restart one agent in its last conversation
     To stop everything:   uv run python -m lab stop
+    Every few hours an agent's conversation is replaced by an empty one in the same tab
+    (session_hours in limits.toml; see "Fresh starts" in lab\MANUAL.md).
 #>
 [CmdletBinding()]
 param(
@@ -33,6 +35,15 @@ if (Test-Path (Join-Path $board 'STOP')) { throw "The lab is stopped. To lift th
 if (-not $DryRun -and ($env:CLAUDECODE -or $env:CLAUDE_CODE_CHILD_SESSION)) {
     # Agents started from inside a Claude Code session become its children and cannot be messaged by the others.
     throw 'Run this from your own terminal, not from inside a Claude Code session: agents started there cannot be woken by the other agents.'
+}
+if (-not $DryRun) {
+    # One conversation per role: a second one would work in the same worktree and answer to the same name.
+    $running = @(Get-CimInstance Win32_Process -Filter "Name = 'claude.exe' OR Name = 'node.exe'" -ErrorAction SilentlyContinue |
+        ForEach-Object { if ($_.CommandLine -match '--name lab-(\w+)') { $Matches[1] } } |
+        Where-Object { $Roles -contains $_ } | Select-Object -Unique)
+    if ($running) {
+        throw "Already running: $(($running | ForEach-Object { "lab-$_" }) -join ', '). Close those tabs first, or start only the others with -Roles. An agent with a cloud job running (uv run python -m lab status) loses the job when its tab closes."
+    }
 }
 
 Push-Location $repo

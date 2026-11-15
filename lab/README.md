@@ -14,6 +14,17 @@ uv run python -m lab stop                 # stop all agents and the lab's cloud 
 uv run python -m lab go                   # lift the stop; then launch again
 ```
 
+To restart an agent by hand, close its tab first, then start it again. A cloud job it has
+running ends with the tab.
+
+## Fresh starts
+
+About every 6 hours an agent's conversation is replaced by an empty one, in the same tab, so
+that it does not get stuck polishing one idea. The agent leaves a handover in its journal
+first, and the new conversation begins by looking at the evidence afresh. Nothing to do:
+`lab status` shows each conversation's age and when its turn comes. The period is
+`session_hours` in `limits.toml`; 0 switches it off.
+
 ## Watch
 
 ```powershell
@@ -57,6 +68,7 @@ The agents reread these files in `.lab\board\` at every tick. Edit one, then run
 | `max_concurrent_gpu_runs` | jobs at once |
 | `gpu_minutes_tracks` | the part of the total that research tracks may use |
 | `cpu_minutes_per_job` | the longest one data-generation job may run |
+| `session_hours` | hours before an agent's conversation is replaced by an empty one (0 = never) |
 
 ## Go back
 

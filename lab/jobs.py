@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 
 from . import board as boards
+from . import sessions
 from .budget import Ledger, Limits, Refused  # noqa: F401  (Refused is part of this module's interface)
 from .paths import Lab, LabError, current_role, git
 
@@ -74,6 +75,7 @@ def book(runs: list[dict], kind: str = "train", minutes: float = 0.0, cwd=None) 
         return None
     ledger = Ledger(lab.board)
     who, commit = current_role(cwd), git("rev-parse", "--short", "HEAD", cwd=cwd, check=False)
+    sessions.hold_jobs(lab.board, who)  # a conversation that is due for a fresh start hands over first
     ids = ledger.reserve([{**r, "by": who, "commit": commit} for r in runs], kind, minutes)
     names = [r["run"] for r in runs]
     if kind == "train":  # keep the exact code of every run reachable, whatever happens to the branch later
@@ -91,5 +93,6 @@ def record(what: str, cwd=None, **fields) -> None:
         return
     if (lab.board / "STOP").exists():
         raise Refused("the human has stopped the lab (STOP is on the board); no cloud job may start")
+    sessions.hold_jobs(lab.board, current_role(cwd))
     Ledger(lab.board).record(what=what, by=current_role(cwd), commit=git("rev-parse", "--short", "HEAD", cwd=cwd, check=False), **fields)
     _save(lab, f"ledger: {what} {fields.get('dataset', '')}".strip())

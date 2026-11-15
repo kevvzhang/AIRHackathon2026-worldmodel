@@ -50,13 +50,13 @@ coordinates the three of you through it (see "Tracks"). It keeps `tracks.md` and
 Each time you are woken:
 
 1. Read this file and your role file (`roles\<you>.md`).
-2. `uv run python -m lab status`
+2. `uv run python -m lab status`. If it says your fresh start is due, see "Fresh starts".
 3. Read every message in your inbox, act on it or note it, then `uv run python -m lab ack`.
 4. Do the most valuable piece of work your role file describes, to a point where it is recorded
-   and shared.
+   and shared. In the first tick of a new conversation, take the fresh look first ("Fresh starts").
 5. Leave a trace: `uv run python -m lab note "what I did, what I found, what comes next"`. Your
-   context can be summarised at any moment and a restarted session starts empty. What is not on
-   the board or in git is lost.
+   context can be summarised at any moment, and every few hours your conversation is replaced
+   by an empty one. What is not on the board or in git is lost.
 6. End the turn. Do not schedule a wake-up after a tick, and never poll. You are woken by one
    of three things and by nothing else:
    - a command you started in the background ends (a cloud run, a long test);
@@ -99,6 +99,44 @@ carefully it retests one.
   learn something. See "Seeds" under the working rules.
 - **Grow the world a little early rather than late**, as eval sees fit: a few rough edges are
   acceptable, a model that is plainly wrong is not.
+
+## Fresh starts
+
+A conversation that runs for many hours narrows. Each step builds on the one before, and in the
+end an agent only polishes the idea it already has, in smaller and smaller steps. So every
+agent's conversation is replaced by an empty one about every `session_hours` hours
+(`limits.toml`; data's and train's turns come a little later than eval's, so that you do not
+all start afresh at once). The board, the code and the runs stay. What you had in mind and did
+not write down is gone, and that is the point: the next conversation sees the work as it is,
+not as you remember deciding it.
+
+**When `lab status` says your fresh start is due:**
+
+1. Start no new cloud job: the ledger refuses one from a conversation that is due. Let the
+   jobs you have running finish, and record their results as always.
+2. Commit what is in your worktree, even unfinished. It need not be published.
+3. As the last thing you do: `uv run python -m lab fresh "<handover>"`. The handover is what
+   the board does not say yet: what is half done and where it is, what you promised to whom,
+   what you are waiting for. It goes into your journal. The conversation ends within seconds
+   and a new one starts in the same terminal, so call no other tool after it.
+
+You may ask for a fresh start before it is due, in the same way, when you notice that you are
+going round in circles. A conversation that is due and sits idle with nothing running is
+replaced without being asked. If `fresh` is refused as an invalid choice, your worktree is
+older than this rule: run `uv run python -m lab sync` once.
+
+**The first tick of a new conversation** begins with a fresh look, before you take up what the
+last conversation left:
+
+1. Read the evidence before the plans: `gaps.md`, `coverage.md`, the champion's scorecard and
+   pictures, then `recipes.md`, `datasets.md`, `features.md` and `tracks.md`.
+2. Write it down (`lab note "FRESH LOOK: ..."`): what holds the model back most, on the
+   evidence; what the recent work in your area keeps circling around; and two or three things
+   you could do that differ from it in kind, not in degree: another cause for the same gap,
+   another part of the pipeline, a simpler way, something to drop.
+3. Only then read the last notes in your journal, the handover among them, and choose.
+   Carrying on as before is right when it wins that comparison; say why in a note. When
+   another direction wins, start it in your next batch, beside what is already running.
 
 ## What the evaluation does not see
 

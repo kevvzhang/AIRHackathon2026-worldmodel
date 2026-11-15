@@ -3,14 +3,15 @@
 import json
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from lab import board as boards
-from lab import cli, guard, jobs, scores, snapshots
+from lab import cli, guard, jobs, scores, sessions, snapshots
 from lab.budget import Ledger, Limits, Refused
-from lab.paths import ROLES, TRUNK, Lab, LabError, git, locked
+from lab.paths import ROLES, TRUNK, Lab, LabError, git, locked, now, parse_time, stamp
 from lab.setup import agent_settings, setup
 
 LIMITS = "gpu_minutes_total = 60\ngpu_minutes_per_run = 20\nmax_concurrent_gpu_runs = 2\n"
@@ -578,3 +579,132 @@ def test_coverage_list_is_read_shown_and_kept_by_eval(repo, monkeypatch, capsys)
         return guard.decide(call("Edit", repo.home, file_path=str(repo.board / "coverage.md")), role, str(repo.home))
 
     assert blocked("eval") is None and "kept by the eval agent" in blocked("train") and "kept by the eval agent" in blocked("data")
+
+
+# --- fresh starts: a conversation is replaced by an empty one from time to time -----------------------------------
+def seen_since(board: Path, role: str, hours: float, idle: float = 0.0, calls: int = 80, launch: str = "L1") -> None:
+    """The guard's record of `role`'s conversation: it began `hours` ago and made its last tool call `idle` minutes ago."""
+    t = now()
+    (board / "status").mkdir(exist_ok=True)
+    (board / "status" / f"{role}.json").write_text(json.dumps({
+        "t": stamp(t - timedelta(minutes=idle)), "tool": "Bash", "session": "s1", "since": stamp(t - timedelta(hours=hours)),
+        "calls": calls, "launch": launch}))
+
+
+def test_guard_keeps_the_clock_of_a_conversation(tmp_path, monkeypatch):
+    monkeypatch.delenv("LAB_SESSION", raising=False)
+    home, board = str(tmp_path), tmp_path / ".lab" / "board"
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("{}")
+    event = {"tool_name": "Bash", "session_id": "s1", "transcript_path": str(transcript)}
+    guard.beat("eval", home, event)
+    guard.beat("eval", home, {**event, "tool_name": "Read"})
+    first = boards.last_seen(board, "eval")
+    assert (first["calls"], first["tool"], first["session"], first["launch"]) == (2, "Read", "s1", "")
+    assert abs((now() - parse_time(first["since"])).total_seconds()) < 120, "it began when its transcript was created"
+    monkeypatch.setenv("LAB_SESSION", "L1")  # the same conversation, now run by a launcher that can replace it
+    guard.beat("eval", home, event)
+    again = boards.last_seen(board, "eval")
+    assert (again["calls"], again["since"], again["launch"]) == (3, first["since"], "L1")
+    guard.beat("eval", home, {"tool_name": "Glob", "session_id": "s2"})  # another conversation: the clock starts again
+    assert boards.last_seen(board, "eval")["calls"] == 1 and boards.last_seen(board, "eval")["session"] == "s2"
+    (board / "status" / "eval.json").write_text('{"t": "20')  # a file cut short does not stop the heartbeat
+    guard.beat("eval", home, event)
+    assert boards.last_seen(board, "eval")["calls"] == 1
+    assert sorted(p.name for p in (board / "status").iterdir()) == ["eval.json"], "nothing is left beside the record"
+
+
+def test_a_conversation_is_due_after_its_hours_and_some_work(board, monkeypatch):
+    monkeypatch.delenv("LAB_SESSION", raising=False)
+    nobody = sessions.read(board, "eval")
+    assert nobody.since is None and not nobody.due and sessions.describe(nobody) == ""
+    seen_since(board, "eval", hours=5)
+    young = sessions.read(board, "eval")
+    assert young.limit == 6 and not young.due and sessions.describe(young) == "conversation 5.0 h old, fresh start in 1.0 h"
+    seen_since(board, "eval", hours=6.5)
+    old = sessions.read(board, "eval")
+    assert old.due and not old.mine and sessions.describe(old) == "conversation 6.5 h old, fresh start due"
+    monkeypatch.setenv("LAB_SESSION", "L1")
+    assert sessions.read(board, "eval").mine
+    seen_since(board, "eval", hours=6.5, calls=10)
+    assert not sessions.read(board, "eval").due and "once it has done more work" in sessions.describe(sessions.read(board, "eval"))
+    seen_since(board, "train", hours=6.5)  # data and train come a little later, so that the three do not start afresh together
+    assert sessions.read(board, "train").limit == pytest.approx(7.2) and not sessions.read(board, "train").due
+    seen_since(board, "train", hours=7.3)
+    assert sessions.read(board, "train").due
+    seen_since(board, "eval", hours=6.5, launch="")
+    stuck = sessions.read(board, "eval")
+    assert stuck.due and not stuck.mine and "old launcher" in sessions.describe(stuck)
+    (board / "limits.toml").write_text(LIMITS + "session_hours = 2\n")
+    seen_since(board, "eval", hours=2.5)
+    assert Ledger(board).limits.session_hours == 2 and sessions.read(board, "eval").due
+    (board / "limits.toml").write_text(LIMITS + "session_hours = 0\n")
+    seen_since(board, "eval", hours=99)
+    assert not sessions.read(board, "eval").due and sessions.describe(sessions.read(board, "eval")) == "conversation 99.0 h old"
+
+
+def test_an_agent_asks_for_its_fresh_start_and_leaves_a_handover(repo, monkeypatch, capsys):
+    train, request = repo.worktree("train"), sessions.request_file(repo.board, "train")
+    monkeypatch.chdir(train)
+    monkeypatch.setenv("LAB_ROLE", "train")
+    monkeypatch.delenv("LAB_SESSION", raising=False)
+    seen_since(repo.board, "train", hours=8)
+    assert cli.main(["fresh", "nothing open"]) == 1 and "cannot be replaced from here" in capsys.readouterr().err
+    jobs.book([{"run": "r0001"}], minutes=5, cwd=train).close()  # no launcher to replace it: nothing is held back
+    monkeypatch.setenv("LAB_SESSION", "L1")
+    assert cli.main(["fresh"]) == 1 and "must know" in capsys.readouterr().err
+    seen_since(repo.board, "train", hours=0.2)
+    assert cli.main(["fresh", "too", "early"]) == 1 and "only 12 minutes old" in capsys.readouterr().err
+    seen_since(repo.board, "train", hours=8)
+    (job,) = Ledger(repo.board).reserve([{"run": "r0002", "by": "train"}], minutes=5)
+    assert cli.main(["fresh", "a job is running"]) == 1 and "still running: r0002" in capsys.readouterr().err
+    Ledger(repo.board).settle(job, 1, "ok")
+    (train / "sandwm" / "models.py").write_text("WIDTH = 256\n")
+    assert cli.main(["fresh", "work is uncommitted"]) == 1 and "commit what is in your worktree" in capsys.readouterr().err
+    git("checkout", "--", "sandwm/models.py", cwd=train)
+    assert not request.exists(), "nothing that was refused asked the launcher for anything"
+
+    assert cli.main(["status"]) == 0  # a due conversation is told so, and starts no new cloud job
+    out = capsys.readouterr().out
+    assert "train     last tool call just now; conversation 8.0 h old, fresh start due; branch" in out and "FRESH START DUE" in out
+    with pytest.raises(Refused, match="due for a fresh start"):
+        jobs.book([{"run": "r0003"}], cwd=train)
+    with pytest.raises(Refused, match="due for a fresh start"):
+        jobs.record("generate", cwd=train, dataset="x")
+
+    assert cli.main(["fresh", "half done: the spatial latent in sandwm/models.py;", "eval waits for a verdict on r0002"]) == 0
+    assert "Call no other tool" in capsys.readouterr().out and json.loads(request.read_text())["why"] == "asked"
+    note = boards.last_note(repo.board, "train")
+    assert "HANDOVER before a fresh start (conversation 8.0 h old, 80 tool calls): half done: the spatial latent" in note
+    assert git("status", "--porcelain", cwd=repo.board) == "", "the handover is in the board's history"
+    monkeypatch.setenv("LAB_ROLE", "human")
+    monkeypatch.chdir(repo.home)
+    assert cli.main(["fresh", "x"]) == 1 and "run by that agent" in capsys.readouterr().err
+    assert cli.main(["status"]) == 0 and "FRESH START DUE" not in capsys.readouterr().out
+
+
+def test_the_launcher_replaces_a_due_conversation_that_sits_idle(repo, monkeypatch, capsys):
+    monkeypatch.chdir(repo.home)  # the launcher runs `python -m lab fresh --idle` from the main checkout, as the agent
+    monkeypatch.setenv("LAB_ROLE", "data")
+    monkeypatch.setenv("LAB_SESSION", "L7")
+    request = sessions.request_file(repo.board, "data")
+
+    def asked(**record) -> bool:
+        seen_since(repo.board, "data", **{"hours": 7, "idle": 45, "launch": "L7", **record})
+        assert cli.main(["fresh", "--idle"]) == 0
+        capsys.readouterr()
+        return request.exists()
+
+    assert not asked(launch="L6"), "the record is of an earlier conversation: the new one has made no tool call yet"
+    assert not asked(idle=5), "it is in the middle of something"
+    assert not asked(hours=3) and not asked(calls=10)
+    (job,) = Ledger(repo.board).reserve([{"run": "r0001", "by": "data"}], minutes=5)
+    assert not asked(), "its cloud job would die with it"
+    Ledger(repo.board).settle(job, 1, "ok")
+    (repo.board / "STOP").write_text("stop")
+    assert not asked()
+    (repo.board / "STOP").unlink()
+    assert asked() and json.loads(request.read_text())["why"] == "idle"
+    assert "the launcher ended the conversation" in boards.last_note(repo.board, "data")
+    notes = (repo.board / "journal" / "data.md").read_text()
+    assert asked() and (repo.board / "journal" / "data.md").read_text() == notes, "one request is enough"

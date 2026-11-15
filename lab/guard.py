@@ -110,12 +110,48 @@ def decide(event: dict, role: str, home: str) -> str | None:
     return None
 
 
-def beat(role: str, home: str, tool: str) -> None:
-    """Leave a trace of this agent's last tool call, for `python -m lab status`."""
+def utc(seconds: float | None = None) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+
+
+def beat(role: str, home: str, event: dict) -> None:
+    """Leave a trace of this agent's last tool call, and keep the clock of its conversation.
+
+    status/<role>.json is read by `python -m lab status` and by lab/sessions.py, which replaces a
+    conversation that has run for too long: `t` and `tool` are the last tool call, `session` is
+    Claude Code's id of the conversation, `since` is when it began, `calls` counts its tool
+    calls, and `launch` is the key of the launcher process that can replace it (LAB_SESSION,
+    set by lab/agent.ps1; empty when no launcher can).
+    """
     folder = os.path.join(home, ".lab", "board", "status")
     os.makedirs(folder, exist_ok=True)
-    with open(os.path.join(folder, f"{role}.json"), "w", encoding="utf-8") as f:
-        json.dump({"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "tool": tool}, f)
+    path = os.path.join(folder, f"{role}.json")
+    launch = os.environ.get("LAB_SESSION", "")
+    session = str(event.get("session_id") or launch)
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f)
+    except (FileNotFoundError, ValueError):
+        old = None  # the first call ever, or a file cut short: begin a new record
+    except OSError:
+        return  # another call of the same agent is writing it at this moment: that one counts
+    if isinstance(old, dict) and session and old.get("session") == session and old.get("since"):
+        since, calls = str(old["since"]), int(old.get("calls") or 0) + 1
+    else:  # a new conversation: it began when its transcript was created
+        try:
+            since = utc(os.path.getctime(str(event["transcript_path"])))
+        except (KeyError, OSError, ValueError):
+            since = utc()
+        calls = 1
+    record = {"t": utc(), "tool": str(event.get("tool_name", "")), "session": session, "since": since, "calls": calls,
+              "launch": launch}
+    scratch = f"{path}.{os.getpid()}.tmp"  # written beside the file and moved over it, so a reader never sees half of one
+    with open(scratch, "w", encoding="utf-8") as f:
+        json.dump(record, f)
+    try:
+        os.replace(scratch, path)
+    except OSError:
+        os.unlink(scratch)
 
 
 def main(argv=None) -> int:
@@ -126,10 +162,15 @@ def main(argv=None) -> int:
     try:
         event = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")
         reason = decide(event, args.role, args.home)
-        beat(args.role, normal(args.home), str(event.get("tool_name", "")))
     except Exception as err:  # a bug here must not take the agent down with it
         print(f"lab guard: {err!r}", file=sys.stderr)
         return 1
+    try:
+        beat(args.role, normal(args.home), event)
+    except Exception as err:  # the heartbeat must neither cost the agent a tool call nor let a blocked one through
+        print(f"lab guard (heartbeat): {err!r}", file=sys.stderr)
+        if not reason:
+            return 1
     if reason:
         print(reason, file=sys.stderr)
         return 2

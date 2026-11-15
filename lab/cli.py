@@ -7,6 +7,7 @@ Agents run these from their own worktree, the human from the main checkout.
     inbox                          list your unread messages
     ack [NAME ...]                 file messages as handled (all of yours if none is named)
     note TEXT                      add a line to your journal
+    fresh HANDOVER                 end this conversation and start an empty one in its place (PROGRAM.md, "Fresh starts")
     save [-m TEXT]                 record hand edits to board files in the board's history
     sync                           merge the trunk into your branch
     publish                        merge the trunk, run the tests, move the trunk to your commit
@@ -38,7 +39,7 @@ import tempfile
 from pathlib import Path
 
 from . import board as boards
-from . import scores
+from . import scores, sessions
 from .budget import Ledger
 from .paths import (AREAS, BENCH_SEEDS, DEFAULT_BENCH, HUMAN_ONLY, ROLES, TRUNK, Lab, LabError, ago, current_role, git, git_ok,
                     now, parse_time, stamp)
@@ -120,8 +121,9 @@ def status_text(lab: Lab, role: str) -> str:
         counts = git("rev-list", "--left-right", "--count", f"{TRUNK}...lab-{r}", cwd=lab.home, check=False).split()
         seen = boards.last_seen(board, r)
         alive = f"last tool call {ago(seen['t'])}" if seen else "has not run yet"
+        talk = sessions.describe(sessions.read(board, r))
         branch = f"branch {counts[1]} ahead / {counts[0]} behind trunk" if len(counts) == 2 else "no branch"
-        lines.append(f"{r:9s} {alive}; {branch}; inbox {len(boards.unread(board, r))}"
+        lines.append(f"{r:9s} {alive}; {talk + '; ' if talk else ''}{branch}; inbox {len(boards.unread(board, r))}"
                      + (f"\n          last note: {boards.last_note(board, r)[:150]}" if boards.last_note(board, r) else ""))
     lines.append(f"human     inbox {len(boards.unread(board, 'human'))}" + ("" if role != "human" else "  (messages from the agents to you)"))
 
@@ -150,6 +152,9 @@ def status_text(lab: Lab, role: str) -> str:
         lines.append(f"your inbox ({len(mine)}):")
         lines += [f"  {p.name}   {boards.subject(p)}" for p in mine[:10]]
         lines.append(f"  read them in {board / 'inbox' / role}; then  uv run python -m lab ack")
+    own = sessions.read(board, role) if role in ROLES else None
+    if own and own.due and own.mine:
+        lines.append(sessions.due_notice(own))
     return "\n".join(lines)
 
 
@@ -287,6 +292,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("inbox")
     sub.add_parser("ack").add_argument("names", nargs="*")
     sub.add_parser("note").add_argument("text", nargs="+")
+    fr = sub.add_parser("fresh")
+    fr.add_argument("text", nargs="*", help="the handover: what the next conversation must know and the board does not say")
+    fr.add_argument("--idle", action="store_true", help="for the launcher: ask only if this conversation is due and sits idle")
     sub.add_parser("save").add_argument("-m", "--message", default="edit")
     sub.add_parser("sync")
     sub.add_parser("publish")
@@ -354,6 +362,11 @@ def run(argv: list[str]) -> int:
     elif c == "note":
         boards.note(board, role, " ".join(a.text))
         boards.commit(board, f"[{role}] note")
+    elif c == "fresh":
+        if role not in ROLES:
+            raise LabError("`fresh` replaces an agent's conversation and is run by that agent. To restart one yourself, close "
+                           "its tab and run  lab\\launch.ps1 -Roles <role>")
+        print((sessions.if_idle(lab, role) or "nothing to do") if a.idle else sessions.ask(lab, role, " ".join(a.text)))
     elif c == "save":
         print("recorded" if boards.commit(board, f"[{role}] {a.message}") else "nothing had changed")
     elif c == "sync":
